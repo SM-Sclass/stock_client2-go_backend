@@ -1,0 +1,22 @@
+node_modules
+npm-debug.log
+# .env
+.env.local
+.env.*.local
+.tokens.json
+data/
+.git
+.gitignore
+.dockerignore
+Dockerfile
+docker-compose.yml
+README.md
+*.md
+.vscode
+.idea
+coverage/
+.nyc_output
+*.log
+logs/
+logs/**
+*.conf
