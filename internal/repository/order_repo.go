@@ -2,14 +2,18 @@ package repository
 
 import (
 	"context"
+	"errors"
 
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/models"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type OrderRepository struct {
 	DB *pgxpool.Pool
 }
+
+var ErrOrderNotFound = errors.New("order not found")
 
 func (r *OrderRepository) AddOrder(ctx context.Context, o *models.Order) (ID int64, err error) {
 	query := `INSERT INTO orders (tracking_stock_id, order_id, order_type, event_type, base_price, quantity, purchase_price, status, placed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`
@@ -35,6 +39,9 @@ func (r *OrderRepository) GetOrderByKiteOrderID(ctx context.Context, orderID str
 	err := r.DB.QueryRow(ctx, query, orderID).
 		Scan(&o.ID, &o.TrackingStockID, &o.OrderID, &o.OrderType, &o.EventType, &o.BasePrice, &o.Quantity, &o.PurchasePrice, &o.Status, &o.PlacedAt)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrOrderNotFound
+		}
 		return nil, err
 	}
 	return &o, nil
