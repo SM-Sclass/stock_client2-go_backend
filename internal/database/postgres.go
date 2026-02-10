@@ -15,7 +15,6 @@ func ConnectPostgresDB() *pgxpool.Pool {
 	if dsn == "" {
 		log.Fatal("DATABASE_URL is not set")
 	}
-	log.Println("DATABASE URL: ", dsn)
 
 	config, err := pgxpool.ParseConfig(dsn)
 	if err != nil {

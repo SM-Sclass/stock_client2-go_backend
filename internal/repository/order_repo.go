@@ -11,6 +11,11 @@ type OrderRepository struct {
 	DB *pgxpool.Pool
 }
 
+type StockOrdersResponse struct {
+	Orders     []models.Order `json:"orders"`
+	TotalCount int            `json:"total_count"`
+}
+
 func (r *OrderRepository) AddOrder(ctx context.Context, o *models.Order) (ID int64, err error) {
 	query := `INSERT INTO orders (tracking_stock_id, order_id, order_type, event_type, base_price, quantity, purchase_price, status, placed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`
 
@@ -40,24 +45,33 @@ func (r *OrderRepository) GetOrderByKiteOrderID(ctx context.Context, orderID str
 	return &o, nil
 }
 
-func (r *OrderRepository) GetOrdersByTrackingStockID(ctx context.Context, trackingStockID int64, pageNumber int, limit int) (orders []models.Order, err error) {
+func (r *OrderRepository) GetOrdersByTrackingStockID(ctx context.Context, trackingStockID int64, pageNumber int, limit int) (StockOrdersResponse, error) {
 	query := `SELECT id, tracking_stock_id, order_id, order_type, event_type, base_price, quantity, purchase_price, status, placed_at FROM orders WHERE tracking_stock_id=$1 LIMIT $2 OFFSET $3`
+	query2 := `SELECT count(*) FROM orders WHERE tracking_stock_id=$1`
 
 	rows, err := r.DB.Query(ctx, query, trackingStockID, limit, (pageNumber-1)*limit)
 	if err != nil {
-		return nil, err
+		return StockOrdersResponse{}, err
 	}
 	defer rows.Close()
 
+	var orders []models.Order
 	for rows.Next() {
 		var o models.Order
 		err := rows.Scan(&o.ID, &o.TrackingStockID, &o.OrderID, &o.OrderType, &o.EventType, &o.BasePrice, &o.Quantity, &o.PurchasePrice, &o.Status, &o.PlacedAt)
 		if err != nil {
-			return nil, err
+			return StockOrdersResponse{}, err
 		}
 		orders = append(orders, o)
 	}
-	return orders, nil
+
+	var totalCount int
+	err = r.DB.QueryRow(ctx, query2, trackingStockID).Scan(&totalCount)
+	if err != nil {
+		return StockOrdersResponse{}, err
+	}
+
+	return StockOrdersResponse{Orders: orders, TotalCount: totalCount}, nil
 }
 
 func (r *OrderRepository) GetOrderByID(ctx context.Context, id int64) (*models.Order, error) {

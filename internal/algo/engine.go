@@ -127,7 +127,7 @@ func (ae *AlgoEngine) processSingleTick(tick kitemodels.Tick) {
 	if currentPrice >= targetPrice {
 		signal = &TradeSignal{
 			InstrumentToken: token,
-			StockSymbol:     trackedStock.StockSymbol,
+			TradingSymbol:     trackedStock.TradingSymbol,
 			Exchange:        trackedStock.Exchange,
 			SignalType:      SignalTargetHit,
 			TriggerPrice:    currentPrice,
@@ -139,7 +139,7 @@ func (ae *AlgoEngine) processSingleTick(tick kitemodels.Tick) {
 		}
 		ae.signalQueue.Push(*signal)
 		log.Printf("🎯 Target hit for %s: Price %.2f >= Target %.2f (Base: %.2f)",
-			trackedStock.StockSymbol, currentPrice, targetPrice, trackedStock.BasePrice)
+			trackedStock.TradingSymbol, currentPrice, targetPrice, trackedStock.BasePrice)
 
 		return
 	}
@@ -148,7 +148,7 @@ func (ae *AlgoEngine) processSingleTick(tick kitemodels.Tick) {
 	if currentPrice <= stoplossPrice {
 		signal = &TradeSignal{
 			InstrumentToken: token,
-			StockSymbol:     trackedStock.StockSymbol,
+			TradingSymbol:     trackedStock.TradingSymbol,
 			Exchange:        trackedStock.Exchange,
 			SignalType:      SignalStopLossHit,
 			TriggerPrice:    currentPrice,
@@ -160,7 +160,7 @@ func (ae *AlgoEngine) processSingleTick(tick kitemodels.Tick) {
 		}
 		ae.signalQueue.Push(*signal)
 		log.Printf("🛑 Stoploss hit for %s: Price %.2f <= Stoploss %.2f (Base: %.2f)",
-			trackedStock.StockSymbol, currentPrice, stoplossPrice, trackedStock.BasePrice)
+			trackedStock.TradingSymbol, currentPrice, stoplossPrice, trackedStock.BasePrice)
 
 		return
 	}

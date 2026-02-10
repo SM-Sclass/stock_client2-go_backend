@@ -11,8 +11,8 @@ type TrackingStocksRepository struct {
 }
 
 func (r *TrackingStocksRepository) AddTrackingStock(ctx context.Context, ts *models.TrackingStock) (ID int64, err error) {
-	query := `INSERT INTO tracking_stocks (stock_symbol, instrument_token, target, stoploss, status) VALUES ($1, $2, $3, $4, $5) RETURNING id`
-	err = r.DB.QueryRow(ctx, query, ts.StockSymbol, ts.InstrumentToken, ts.Target, ts.StopLoss, ts.Status).Scan(&ID)
+	query := `INSERT INTO tracking_stocks (trading_symbol, instrument_token, target, stoploss, status) VALUES ($1, $2, $3, $4, $5) RETURNING id`
+	err = r.DB.QueryRow(ctx, query, ts.TradingSymbol, ts.InstrumentToken, ts.Target, ts.StopLoss, ts.Status).Scan(&ID)
 	if err != nil {
 		return 0, err
 	}
@@ -20,7 +20,7 @@ func (r *TrackingStocksRepository) AddTrackingStock(ctx context.Context, ts *mod
 }
 
 func (r *TrackingStocksRepository) GetAllTrackingStocks(ctx context.Context) (trackingStocks []models.TrackingStock, err error) {
-	query := `SELECT id, stock_symbol, instrument_token, target, stoploss, status, created_at FROM tracking_stocks WHERE status IN ('AUTO_INACTIVE')`
+	query := `SELECT id, trading_symbol, instrument_token, target, stoploss, status, created_at FROM tracking_stocks WHERE status IN ('AUTO_INACTIVE')`
 	rows, err := r.DB.Query(ctx, query)
 	if err != nil {
 		return nil, err
@@ -29,7 +29,7 @@ func (r *TrackingStocksRepository) GetAllTrackingStocks(ctx context.Context) (tr
 
 	for rows.Next() {
 		var ts models.TrackingStock
-		err := rows.Scan(&ts.ID, &ts.StockSymbol, &ts.InstrumentToken, &ts.Target, &ts.StopLoss, &ts.Status, &ts.CreatedAt)
+		err := rows.Scan(&ts.ID, &ts.TradingSymbol, &ts.InstrumentToken, &ts.Target, &ts.StopLoss, &ts.Status, &ts.CreatedAt)
 		if err != nil {
 			return nil, err
 		}   
@@ -40,11 +40,11 @@ func (r *TrackingStocksRepository) GetAllTrackingStocks(ctx context.Context) (tr
 }
 
 func (r *TrackingStocksRepository) GetTrackingStockByID(ctx context.Context, id int64) (*models.TrackingStock, error) {
-	query := `SELECT id, stock_symbol, instrument_token, target, stoploss, status, created_at FROM tracking_stocks WHERE id=$1`
+	query := `SELECT id, trading_symbol, instrument_token, target, stoploss, status, created_at FROM tracking_stocks WHERE id=$1`
 	
 	var ts models.TrackingStock
 	err := r.DB.QueryRow(ctx, query, id).
-		Scan(&ts.ID, &ts.StockSymbol, &ts.InstrumentToken, &ts.Target, &ts.StopLoss, &ts.Status, &ts.CreatedAt)
+		Scan(&ts.ID, &ts.TradingSymbol, &ts.InstrumentToken, &ts.Target, &ts.StopLoss, &ts.Status, &ts.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -52,11 +52,11 @@ func (r *TrackingStocksRepository) GetTrackingStockByID(ctx context.Context, id 
 }
 
 func (r *TrackingStocksRepository) GetTrackingStockByTradingSymbol(ctx context.Context, trading_symbol string) (*models.TrackingStock, error) {
-	query := `SELECT id, stock_symbol, instrument_token, target, stoploss, status, created_at FROM tracking_stocks WHERE stock_symbol=$1`
+	query := `SELECT id, trading_symbol, instrument_token, target, stoploss, status, created_at FROM tracking_stocks WHERE trading_symbol=$1`
 	
 	var ts models.TrackingStock
 	err := r.DB.QueryRow(ctx, query, trading_symbol).
-		Scan(&ts.ID, &ts.StockSymbol, &ts.InstrumentToken, &ts.Target, &ts.StopLoss, &ts.Status, &ts.CreatedAt)
+		Scan(&ts.ID, &ts.TradingSymbol, &ts.InstrumentToken, &ts.Target, &ts.StopLoss, &ts.Status, &ts.CreatedAt)
 	if err != nil {
 		return nil, err
 	}

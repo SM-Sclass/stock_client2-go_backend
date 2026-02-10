@@ -128,15 +128,15 @@ func LoadTrackedStocksOnStartup(runtime *Runtime) error {
 		}
 
 		// Confirm instrument token from instrument service
-		instrument, exists := runtime.InstrumentSvc.NSESymbolToInstrument[stock.StockSymbol]
+		instrument, exists := runtime.InstrumentSvc.NSESymbolToInstrument[stock.TradingSymbol]
 		if !exists {
-			log.Printf("⚠️ Instrument not found for %s, skipping", stock.StockSymbol)
+			log.Printf("⚠️ Instrument not found for %s, skipping", stock.TradingSymbol)
 			continue
 		}
 
 		// Add to tracking manager
 		trackedStock := tracking.TrackedStock{
-			StockSymbol:     stock.StockSymbol,
+			TradingSymbol:     stock.TradingSymbol,
 			InstrumentToken: uint32(instrument.InstrumentToken),
 			BasePrice:       0, // Will be set when first tick comes
 			Target:          stock.Target,

@@ -162,15 +162,15 @@ func CreateMarketOpenJob(
 		// Load stocks to tracking manager with confirmed instrument tokens
 		for _, stock := range stocks {
 			// Confirm instrument token from instrument service
-			instrument, exists := instrumentSvc.NSESymbolToInstrument[stock.StockSymbol]
+			instrument, exists := instrumentSvc.NSESymbolToInstrument[stock.TradingSymbol]
 			if !exists {
-				log.Printf("⚠️ Instrument not found for %s, skipping", stock.StockSymbol)
+				log.Printf("⚠️ Instrument not found for %s, skipping", stock.TradingSymbol)
 				continue
 			}
 
 			
 			trackedStock := tracking.TrackedStock{
-				StockSymbol:     stock.StockSymbol,
+				TradingSymbol:     stock.TradingSymbol,
 				InstrumentToken: uint32(instrument.InstrumentToken),
 				BasePrice:       0, // Will be set when first tick comes
 				Target:          stock.Target,
@@ -182,7 +182,7 @@ func CreateMarketOpenJob(
 
 			
 			if err := trackingRepo.UpdateTrackingStockStatus(ctx, stock.ID, "AUTO_ACTIVE"); err != nil {
-				log.Printf("⚠️ Failed to update status for %s: %v", stock.StockSymbol, err)
+				log.Printf("⚠️ Failed to update status for %s: %v", stock.TradingSymbol, err)
 			}
 		}
 
@@ -218,7 +218,7 @@ func CreateMarketCloseJob(
 		for _, stock := range stocks {
 			if stock.Status == "AUTO_ACTIVE" || stock.Status == "ACTIVE" {
 				if err := trackingRepo.UpdateTrackingStockStatus(ctx, stock.ID, "AUTO_INACTIVE"); err != nil {
-					log.Printf("⚠️ Failed to update status for %s: %v", stock.StockSymbol, err)
+					log.Printf("⚠️ Failed to update status for %s: %v", stock.TradingSymbol, err)
 				}
 			}
 		}

@@ -20,7 +20,7 @@ type TrackingStockHandler struct {
 }
 
 type NewStock struct {
-	StockSymbol     string  `json:"stock_symbol" binding:"required"`
+	TradingSymbol   string  `json:"trading_symbol" binding:"required"`
 	Exchange        string  `json:"exchange" binding:"required"`
 	InstrumentToken int64   `json:"instrument_token" binding:"required"`
 	Target          float64 `json:"target" binding:"required"`
@@ -40,7 +40,7 @@ func (h *TrackingStockHandler) Add(c *gin.Context) {
 		return
 	}
 
-	existingStock, err := h.TrackingStockRepo.GetTrackingStockByTradingSymbol(c.Request.Context(), req.StockSymbol)
+	existingStock, err := h.TrackingStockRepo.GetTrackingStockByTradingSymbol(c.Request.Context(), req.TradingSymbol)
 	if existingStock != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "tracking stock already exists"})
 		return
@@ -51,7 +51,7 @@ func (h *TrackingStockHandler) Add(c *gin.Context) {
 	}
 
 	newTrackingStock := &models.TrackingStock{
-		StockSymbol:     req.StockSymbol,
+		TradingSymbol:   req.TradingSymbol,
 		Exchange:        req.Exchange,
 		InstrumentToken: req.InstrumentToken,
 		Target:          req.Target,
@@ -76,25 +76,25 @@ func (h *TrackingStockHandler) Add(c *gin.Context) {
 
 	if marketOpen && newTrackingStock.Status == "ACTIVE" && h.Runtime.KiteReady {
 		trackingStock := tracking.TrackedStock{
-			StockSymbol:     newTrackingStock.StockSymbol,
+			TradingSymbol:   newTrackingStock.TradingSymbol,
 			InstrumentToken: uint32(newTrackingStock.InstrumentToken),
 			Target:          newTrackingStock.Target,
 			StopLoss:        newTrackingStock.StopLoss,
 			Quantity:        newTrackingStock.Quantity,
 			Exchange:        newTrackingStock.Exchange,
 		}
-		
-		baseLTP, err := h.Runtime.KiteClient.KiteConnect.GetLTP(newTrackingStock.StockSymbol)
+
+		baseLTP, err := h.Runtime.KiteClient.KiteConnect.GetLTP(newTrackingStock.TradingSymbol)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to get LTP for tracking stock", "error": err.Error()})
 			return
 		}
 
-		trackingStock.BasePrice = baseLTP[newTrackingStock.StockSymbol].LastPrice
+		trackingStock.BasePrice = baseLTP[newTrackingStock.TradingSymbol].LastPrice
 		h.Runtime.TrackingManager.AddTrackingStock(trackingStock)
 	}
 
-	c.JSON(http.StatusOK, gin.H{"id": ID})
+	c.JSON(http.StatusCreated, gin.H{"id": ID})
 }
 
 func (h *TrackingStockHandler) GetAll(c *gin.Context) {
@@ -160,7 +160,7 @@ func (h *TrackingStockHandler) Update(c *gin.Context) {
 
 		if trackingStockData.Status == "ACTIVE" {
 			trackingStock := tracking.TrackedStock{
-				StockSymbol:     trackingStockData.StockSymbol,
+				TradingSymbol:   trackingStockData.TradingSymbol,
 				InstrumentToken: uint32(trackingStockData.InstrumentToken),
 				Target:          trackingStockData.Target,
 				StopLoss:        trackingStockData.StopLoss,
@@ -224,18 +224,18 @@ func (h *TrackingStockHandler) UpdateStatusToStart(c *gin.Context) {
 
 	if h.Runtime.KiteReady {
 		var trackingStock tracking.TrackedStock
-		trackingStock.StockSymbol = trackingStockData.StockSymbol
+		trackingStock.TradingSymbol = trackingStockData.TradingSymbol
 		trackingStock.InstrumentToken = uint32(trackingStockData.InstrumentToken)
 		trackingStock.Target = trackingStockData.Target
 		trackingStock.StopLoss = trackingStockData.StopLoss
 		var baseLTP kiteconnect.QuoteLTP
-		baseLTP, err = h.Runtime.KiteClient.KiteConnect.GetLTP(trackingStock.StockSymbol)
+		baseLTP, err = h.Runtime.KiteClient.KiteConnect.GetLTP(trackingStock.TradingSymbol)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to get LTP for tracking stock", "error": err.Error()})
 			return
 		}
 
-		trackingStock.BasePrice = baseLTP[trackingStockData.StockSymbol].LastPrice
+		trackingStock.BasePrice = baseLTP[trackingStock.TradingSymbol].LastPrice
 		h.Runtime.TrackingManager.AddTrackingStock(trackingStock)
 	}
 

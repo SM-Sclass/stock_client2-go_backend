@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"time"
 
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/app"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/config"
@@ -11,6 +12,7 @@ import (
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/repository"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/routes"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/services"
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )
 
@@ -84,11 +86,20 @@ func main() {
 	stockQueryHandler := &handlers.StockQueryHandler{InstrumentService: instrumentSvc}
 
 	router := gin.Default()
-	routes.RegisterRoutes(router, 
-		authHandler, 
-		trackingStockHandler, 
-		kiteCallbackHandler, 
-		orderHandler, 
+	router.Use(cors.New(cors.Config{
+		AllowOrigins:              []string{config.ServerConfig.FrontendURL},
+		AllowMethods:              []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders:              []string{"Origin", "Content-Type", "Authorization"},
+		ExposeHeaders:             []string{"Content-Length"},
+		AllowCredentials:          true,
+		OptionsResponseStatusCode: 204,
+		MaxAge:                    12 * time.Hour,
+	}))
+	routes.RegisterRoutes(router,
+		authHandler,
+		trackingStockHandler,
+		kiteCallbackHandler,
+		orderHandler,
 		stockQueryHandler)
 
 	router.GET("/health", func(c *gin.Context) {

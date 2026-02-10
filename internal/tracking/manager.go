@@ -7,7 +7,7 @@ import (
 )
 
 type TrackedStock struct {
-	StockSymbol     string
+	TradingSymbol     string
 	InstrumentToken uint32
 	BasePrice       float64
 	Target          float64

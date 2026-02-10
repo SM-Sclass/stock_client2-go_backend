@@ -144,16 +144,16 @@ func (oe *OrderEngine) processSignal(signal algo.TradeSignal) {
 	orderType := oe.determineOrderType(signal)
 
 	// Get tracking stock info from DB
-	trackingStock, err := oe.trackingRepo.GetTrackingStockByTradingSymbol(ctx, signal.StockSymbol)
+	trackingStock, err := oe.trackingRepo.GetTrackingStockByTradingSymbol(ctx, signal.TradingSymbol)
 	if err != nil {
-		log.Printf("❌ Failed to get tracking stock for %s: %v", signal.StockSymbol, err)
+		log.Printf("❌ Failed to get tracking stock for %s: %v", signal.TradingSymbol, err)
 		return
 	}
 
 	// Place order via Kite
 	orderParams := kiteconnect.OrderParams{
 		Exchange:        signal.Exchange,
-		Tradingsymbol:   signal.StockSymbol,
+		Tradingsymbol:   signal.TradingSymbol,
 		TransactionType: orderType,
 		Quantity:        int(signal.Quantity),
 		Product:         kiteconnect.ProductMIS, // Intraday
@@ -163,12 +163,12 @@ func (oe *OrderEngine) processSignal(signal algo.TradeSignal) {
 
 	orderResponse, err := oe.kiteClient.KiteConnect.PlaceOrder(kiteconnect.VarietyRegular, orderParams)
 	if err != nil {
-		log.Printf("❌ Failed to place order for %s: %v", signal.StockSymbol, err)
+		log.Printf("❌ Failed to place order for %s: %v", signal.TradingSymbol, err)
 		return
 	}
 
 	log.Printf("✅ Order placed for %s: OrderID=%s, Type=%s",
-		signal.StockSymbol, orderResponse.OrderID, orderType)
+		signal.TradingSymbol, orderResponse.OrderID, orderType)
 
 	// Save order to database
 	order := &models.Order{
@@ -184,7 +184,7 @@ func (oe *OrderEngine) processSignal(signal algo.TradeSignal) {
 
 	err = oe.OrderSvc.AddPlacedOrder(ctx, order)
 	if err != nil {
-		log.Printf("⚠️ Failed to save order to DB for %s: %v", signal.StockSymbol, err)
+		log.Printf("⚠️ Failed to save order to DB for %s: %v", signal.TradingSymbol, err)
 	}
 }
 

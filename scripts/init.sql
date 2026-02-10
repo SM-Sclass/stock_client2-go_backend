@@ -7,7 +7,7 @@ ON orders(tracking_stock_id);
 
 CREATE TABLE IF NOT EXISTS tracking_stocks (
     id SERIAL PRIMARY KEY,
-    stock_symbol VARCHAR(10) UNIQUE NOT NULL,
+    trading_symbol VARCHAR(10) UNIQUE NOT NULL,
     exchange VARCHAR(10) DEFAULT 'NSE' NOT NULL,
     instrument_token BIGINT NOT NULL,
     target DECIMAL(3, 2) NOT NULL,
@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS orders (
 
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
+    full_name VARCHAR(255) NOT NULL,
     phone VARCHAR(15) UNIQUE NOT NULL,
     password VARCHAR(255) NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW(),

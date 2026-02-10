@@ -11,7 +11,7 @@ const (
 
 type TradeSignal struct {
 	InstrumentToken uint32
-	StockSymbol     string
+	TradingSymbol     string
 	Exchange        string
 	SignalType      SignalType
 	TriggerPrice    float64
