@@ -41,5 +41,5 @@ func (h *OrderHandler) GetStockOrders(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"orders": orders})
+	c.JSON(http.StatusOK, gin.H{"orders": orders.Orders, "total_count": orders.TotalCount})
 }

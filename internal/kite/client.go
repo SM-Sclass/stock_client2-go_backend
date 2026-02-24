@@ -37,6 +37,8 @@ func (kc *KiteClient) GenerateSession(requestToken string) error {
 		return err
 	}
 
+	fmt.Println("Session: ", session)
+
 	// Save token
 	token := &KiteToken{
 		AccessToken:  session.AccessToken,
@@ -61,13 +63,19 @@ func (kc *KiteClient) EnsureAuthenticated() error {
 	}
 
 	if token != nil && time.Now().Before(token.Expiry) {
+		kc.AccessToken = token.AccessToken
 		kc.KiteConnect.SetAccessToken(token.AccessToken)
 		return nil
 	}
 	return fmt.Errorf("token expired or missing")
 }
 
-func (kc *KiteClient) GetInstrumentsByExchange(exchange string) ([]kiteconnect.Instrument, error) {
+// Orders Methods
+func (kc *KiteClient) PlaceRegularOrder(orderParams kiteconnect.OrderParams) (kiteconnect.OrderResponse, error) {
+	return kc.KiteConnect.PlaceOrder(kiteconnect.VarietyRegular, orderParams)
+}
+
+func (kc *KiteClient) GetInstrumentsByExchange(exchange string) (kiteconnect.Instruments, error) {
 	return kc.KiteConnect.GetInstrumentsByExchange(exchange)
 }
 
@@ -82,4 +90,8 @@ func (kc *KiteClient) IsTokenValid() bool {
 	}
 
 	return true
+}
+
+func (kc *KiteClient) GetOrders() ([]kiteconnect.Order, error) {
+	return kc.KiteConnect.GetOrders()
 }

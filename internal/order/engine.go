@@ -9,35 +9,36 @@ import (
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/algo"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/kite"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/models"
-	"github.com/SM-Sclass/stock_client2-go_backend/internal/repository"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/services"
+	"github.com/SM-Sclass/stock_client2-go_backend/internal/tracking"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/utils"
 	kiteconnect "github.com/zerodha/gokiteconnect/v4"
 )
 
 type OrderEngine struct {
-	kiteClient   *kite.KiteClient
-	signalQueue  *algo.SignalQueue
-	OrderSvc     *services.OrderService
-	trackingRepo *repository.TrackingStocksRepository
-	stopChan     chan struct{}
-	wg           sync.WaitGroup
-	running      bool
-	mu           sync.Mutex
+	kiteClient      *kite.KiteClient
+	sellOrderChan   chan algo.TradeSignal
+	trackingManager *tracking.TrackingManager
+	OrderSvc        *services.OrderService
+	stopChan        chan struct{}
+	wg              sync.WaitGroup
+	running         bool
+	mu              sync.Mutex
 }
 
 func NewOrderEngine(
 	kiteClient *kite.KiteClient,
-	signalQueue *algo.SignalQueue,
+	trackingManager *tracking.TrackingManager,
 	orderSvc *services.OrderService,
-	trackingRepo *repository.TrackingStocksRepository,
+	sellOrderChan chan algo.TradeSignal,
+
 ) *OrderEngine {
 	return &OrderEngine{
-		kiteClient:   kiteClient,
-		signalQueue:  signalQueue,
-		OrderSvc:     orderSvc,
-		trackingRepo: trackingRepo,
-		stopChan:     make(chan struct{}),
+		kiteClient:      kiteClient,
+		sellOrderChan:   sellOrderChan,
+		trackingManager: trackingManager,
+		OrderSvc:        orderSvc,
+		stopChan:        make(chan struct{}),
 	}
 }
 
@@ -92,14 +93,15 @@ func (oe *OrderEngine) processLoop() {
 		select {
 		case <-oe.stopChan:
 			return
+		case signal := <-oe.sellOrderChan:
+			oe.processSellSignal(signal)
 		case <-ticker.C:
-			// Check if it's trading time
+
 			if !utils.IsMarketTime() {
 				continue
 			}
 
-			// Flush and process all signals
-			oe.flushAndProcessSignals()
+			oe.ProcessBuying()
 		}
 	}
 }
@@ -119,72 +121,123 @@ func (oe *OrderEngine) createMinuteTicker() *time.Ticker {
 }
 
 // flushAndProcessSignals flushes the queue and places all orders
-func (oe *OrderEngine) flushAndProcessSignals() {
-	signals := oe.signalQueue.Flush()
-
-	if len(signals) == 0 {
+func (oe *OrderEngine) ProcessBuying() {
+	stocks := oe.trackingManager.GetAllBuyingStocks()
+	if len(stocks) == 0 {
 		return
 	}
 
-	log.Printf("📥 Processing %d signals from queue", len(signals))
-
-	for _, signal := range signals {
-		oe.processSignal(signal)
+	for _, stock := range stocks {
+		log.Printf("Placing buy order for %s with imbalance %d", stock.TradingSymbol, stock.SellQuantity)
+		oe.processBuySignal(stock)
 	}
 
-	log.Printf("✅ Finished processing %d signals", len(signals))
+	log.Printf("✅ Finished processing %d signals", len(stocks))
 }
 
-// processSignal places an order for a given signal
-func (oe *OrderEngine) processSignal(signal algo.TradeSignal) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+// processBuySignal places a buy order for a given signal
+func (oe *OrderEngine) processBuySignal(stock tracking.TrackedStock) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	// Determine order type based on signal
-	orderType := oe.determineOrderType(signal)
-
-	// Get tracking stock info from DB
-	trackingStock, err := oe.trackingRepo.GetTrackingStockByTradingSymbol(ctx, signal.StockSymbol)
-	if err != nil {
-		log.Printf("❌ Failed to get tracking stock for %s: %v", signal.StockSymbol, err)
+	if !oe.trackingManager.TryLockStock(stock.InstrumentToken) {
+		log.Printf("⚠️ Failed to lock stock %s", stock.TradingSymbol)
 		return
 	}
 
-	// Place order via Kite
 	orderParams := kiteconnect.OrderParams{
-		Exchange:        signal.Exchange,
-		Tradingsymbol:   signal.StockSymbol,
-		TransactionType: orderType,
-		Quantity:        int(signal.Quantity),
+		Exchange:        stock.Exchange,
+		Tradingsymbol:   stock.TradingSymbol,
+		TransactionType: kiteconnect.TransactionTypeBuy,
+		Quantity:        int(stock.BuyQuantity),
 		Product:         kiteconnect.ProductMIS, // Intraday
 		OrderType:       kiteconnect.OrderTypeMarket,
 		Validity:        kiteconnect.ValidityDay,
 	}
 
-	orderResponse, err := oe.kiteClient.KiteConnect.PlaceOrder(kiteconnect.VarietyRegular, orderParams)
+	log.Printf("Order Params: %+v", orderParams)
+
+	orderResponse, err := oe.kiteClient.PlaceRegularOrder(orderParams)
 	if err != nil {
-		log.Printf("❌ Failed to place order for %s: %v", signal.StockSymbol, err)
+		log.Printf("❌ Failed to place buy order for %s: %v", stock.TradingSymbol, err)
+		oe.trackingManager.UnlockStock(stock.InstrumentToken) // Unlock on failure
 		return
 	}
 
 	log.Printf("✅ Order placed for %s: OrderID=%s, Type=%s",
-		signal.StockSymbol, orderResponse.OrderID, orderType)
+		stock.TradingSymbol, orderResponse.OrderID, kiteconnect.TransactionTypeBuy)
 
-	// Save order to database
 	order := &models.Order{
-		TrackingStockID: trackingStock.ID,
+		TrackingStockID: stock.ID,
 		OrderID:         orderResponse.OrderID,
-		OrderType:       orderType,
-		EventType:       string(signal.SignalType),
-		BasePrice:       signal.BasePrice,
-		Quantity:        float64(signal.Quantity),
+		OrderType:       kiteconnect.TransactionTypeBuy,
+		EventType:       string(algo.SignalNone),
+		BasePrice:       stock.BasePrice,
+		Quantity:        float64(stock.BuyQuantity),
 		Status:          "PENDING",
 		PlacedAt:        time.Now(),
 	}
 
 	err = oe.OrderSvc.AddPlacedOrder(ctx, order)
 	if err != nil {
-		log.Printf("⚠️ Failed to save order to DB for %s: %v", signal.StockSymbol, err)
+		log.Printf("⚠️ Failed to save order to DB for %s: %v", stock.TradingSymbol, err)
+	}
+}
+
+func (oe *OrderEngine) processSellSignal(signal algo.TradeSignal) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	trackedStock, exists := oe.trackingManager.GetStock(signal.InstrumentToken)
+	if !exists {
+		log.Printf("⚠️ No tracked stock found for instrument token %d", signal.InstrumentToken)
+		return
+	}
+
+	if trackedStock.SellQuantity == 0 {
+		log.Printf("⚠️ Stock %s SellQuantity is 0, skipping stale sell signal", trackedStock.TradingSymbol)
+		oe.trackingManager.UnlockStock(signal.InstrumentToken) // Release AlgoEngine's lock
+		return
+	}
+
+	// Use current SellQuantity, not the stale signal quantity
+	sellQty := trackedStock.SellQuantity
+
+	orderParams := kiteconnect.OrderParams{
+		Exchange:        signal.Exchange,
+		Tradingsymbol:   signal.TradingSymbol,
+		TransactionType: kiteconnect.TransactionTypeSell,
+		Quantity:        int(sellQty),
+		Product:         kiteconnect.ProductMIS, // Intraday
+		OrderType:       kiteconnect.OrderTypeLimit,
+		Validity:        kiteconnect.ValidityDay,
+	}
+
+	log.Printf("Order Params: %+v", orderParams)
+
+	orderResponse, err := oe.kiteClient.PlaceRegularOrder(orderParams)
+	if err != nil {
+		log.Printf("❌ Failed to place sell order for %s: %v", signal.TradingSymbol, err)
+		oe.trackingManager.UnlockStock(signal.InstrumentToken) // Unlock on failure
+		return
+	}
+
+	log.Printf("✅ Order placed for %s: OrderID=%s, Type=%s", signal.TradingSymbol, orderResponse.OrderID, "SELL")
+
+	order := &models.Order{
+		TrackingStockID: signal.TrackingStockID,
+		OrderID:         orderResponse.OrderID,
+		OrderType:       kiteconnect.TransactionTypeSell,
+		EventType:       string(signal.SignalType),
+		BasePrice:       signal.BasePrice,
+		Quantity:        float64(sellQty),
+		Status:          "PENDING",
+		PlacedAt:        time.Now(),
+	}
+
+	err = oe.OrderSvc.AddPlacedOrder(ctx, order)
+	if err != nil {
+		log.Printf("⚠️ Failed to save order to DB for %s: %v", signal.TradingSymbol, err)
 	}
 }
 
@@ -199,29 +252,6 @@ func (oe *OrderEngine) determineOrderType(signal algo.TradeSignal) string {
 		return kiteconnect.TransactionTypeSell
 	}
 }
-
-// ProcessOrderUpdate handles order updates from Kite websocket
-// func (oe *OrderEngine) ProcessOrderUpdate(orderID string, status string) error {
-// 	ctx := context.Background()
-
-// 	// Get order from DB
-// 	order, err := oe.orderRepo.GetOrderByOrderID(ctx, orderID)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to get order %s: %v", orderID, err)
-// 	}
-
-// 	// Map Kite status to our status
-// 	mappedStatus := oe.mapOrderStatus(status)
-
-// 	// Update order status
-// 	err = oe.orderRepo.UpdateOrderStatus(ctx, order.ID, mappedStatus)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to update order status %s: %v", orderID, err)
-// 	}
-
-// 	log.Printf("📝 Order %s status updated to %s", orderID, mappedStatus)
-// 	return nil
-// }
 
 // mapOrderStatus maps Kite order status to our internal status
 func (oe *OrderEngine) mapOrderStatus(kiteStatus string) string {

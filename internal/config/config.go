@@ -9,7 +9,7 @@ import (
 type Config struct {
 	JWTSecret     string
 	DatabaseURL   string
-	RedisAddr     string
+	FrontendURL   string
 	Port          string
 	ApiKey        string
 	ApiSecret     string
@@ -28,7 +28,7 @@ func MustLoad() {
 	ServerConfig = &Config{
 		JWTSecret:     os.Getenv("JWT_SECRET"),
 		DatabaseURL:   os.Getenv("DATABASE_URL"),
-		RedisAddr:     os.Getenv("REDIS_ADDR"),
+		FrontendURL:   os.Getenv("FRONTEND_URL"),
 		Port:          os.Getenv("PORT"),
 		ApiKey:        os.Getenv("KITE_API_KEY"),
 		ApiSecret:     os.Getenv("KITE_API_SECRET"),

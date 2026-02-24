@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"time"
 
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/app"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/config"
@@ -11,6 +12,7 @@ import (
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/repository"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/routes"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/services"
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )
 
@@ -35,6 +37,9 @@ func main() {
 		TrackingStockRepo: trackingStockRepo,
 	}
 
+	// Load instruments from DB or fetch fresh
+	instrumentSvc.InitializeService()
+
 	//Initialize Kite Client
 	runtime := &app.Runtime{
 		KiteClient:        kiteClient,
@@ -51,6 +56,11 @@ func main() {
 		if err := app.StartKiteRuntime(runtime); err != nil {
 			log.Printf("⚠️ Kite runtime failed (non-fatal): %v", err)
 		} else {
+			// Sync orders from Kite before loading stocks (needed for imbalance & BasePrice)
+			if err := app.SyncOrdersOnStartup(runtime); err != nil {
+				log.Printf("⚠️ Failed to sync orders: %v", err)
+			}
+
 			// Load tracked stocks on startup (AUTO_INACTIVE stocks)
 			if err := app.LoadTrackedStocksOnStartup(runtime); err != nil {
 				log.Printf("⚠️ Failed to load tracked stocks: %v", err)
@@ -59,16 +69,6 @@ func main() {
 			// Start engines if market is currently open
 			app.StartEnginesIfMarketOpen(runtime)
 		}
-	}
-
-	// Load instruments from DB or fetch fresh
-	stale, _ := instrumentSvc.IsInstrumentsDataStale()
-	if stale {
-		instrumentSvc.FetchAndLoadInstruments()
-		log.Println("📊 Instruments data is stale, will be refreshed on next cron job or auth")
-	} else {
-		_ = instrumentSvc.LoadInstrumentFromDB()
-		instrumentSvc.BuildInstrumentMaps()
 	}
 
 	// Setup and start scheduler (cron jobs)
@@ -80,15 +80,24 @@ func main() {
 	trackingStockHandler := &handlers.TrackingStockHandler{TrackingStockRepo: trackingStockRepo, Runtime: runtime}
 	authHandler := &handlers.AuthHandler{UserRepo: userRepo}
 	orderHandler := &handlers.OrderHandler{OrderRepo: orderRepo}
-	kiteCallbackHandler := &handlers.KiteCallbackHandler{Kc: kiteClient, Runtime: runtime}
+	kiteCallbackHandler := &handlers.KiteCallbackHandler{Kc: kiteClient, Runtime: runtime, InstrumentService: instrumentSvc}
 	stockQueryHandler := &handlers.StockQueryHandler{InstrumentService: instrumentSvc}
 
 	router := gin.Default()
-	routes.RegisterRoutes(router, 
-		authHandler, 
-		trackingStockHandler, 
-		kiteCallbackHandler, 
-		orderHandler, 
+	router.Use(cors.New(cors.Config{
+		AllowOrigins:              []string{config.ServerConfig.FrontendURL},
+		AllowMethods:              []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders:              []string{"Origin", "Content-Type", "Authorization"},
+		ExposeHeaders:             []string{"Content-Length"},
+		AllowCredentials:          true,
+		OptionsResponseStatusCode: 204,
+		MaxAge:                    12 * time.Hour,
+	}))
+	routes.RegisterRoutes(router,
+		authHandler,
+		trackingStockHandler,
+		kiteCallbackHandler,
+		orderHandler,
 		stockQueryHandler)
 
 	router.GET("/health", func(c *gin.Context) {

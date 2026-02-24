@@ -12,8 +12,8 @@ type InstrumentRepository struct {
 
 func (r *InstrumentRepository) UpsertInstruments(ctx context.Context, exchange string, instrumentsData []byte) (ID int64, err error) {
 	query := `
-        INSERT INTO instruments (exchange, instruments_data)
-        VALUES ($1, $2)
+        INSERT INTO instruments (exchange, instruments_data, stored_at)
+        VALUES ($1, $2::jsonb, NOW())
         ON CONFLICT (exchange)
         DO UPDATE SET
             instruments_data = EXCLUDED.instruments_data,

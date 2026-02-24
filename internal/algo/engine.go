@@ -7,30 +7,31 @@ import (
 
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/kite"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/tracking"
+
 	kitemodels "github.com/zerodha/gokiteconnect/v4/models"
 )
 
 type AlgoEngine struct {
 	trackingManager *tracking.TrackingManager
 	broadcaster     *kite.TickBroadcaster
-	signalQueue     *SignalQueue
 
-	tickChan chan []kitemodels.Tick
-	stopChan chan struct{}
-	wg       sync.WaitGroup
-	running  bool
-	mu       sync.Mutex
+	tickChan      chan []kitemodels.Tick
+	sellOrderChan chan TradeSignal
+	stopChan      chan struct{}
+	wg            sync.WaitGroup
+	running       bool
+	mu            sync.Mutex
 }
 
 func NewAlgoEngine(
 	trackingManager *tracking.TrackingManager,
 	broadcaster *kite.TickBroadcaster,
-	signalQueue *SignalQueue,
+	sellOrderChan chan TradeSignal,
 ) *AlgoEngine {
 	return &AlgoEngine{
 		trackingManager: trackingManager,
 		broadcaster:     broadcaster,
-		signalQueue:     signalQueue,
+		sellOrderChan:   sellOrderChan,
 		stopChan:        make(chan struct{}),
 	}
 }
@@ -99,15 +100,18 @@ func (ae *AlgoEngine) processTicks(ticks []kitemodels.Tick) {
 // processSingleTick processes a single tick against tracked stocks
 func (ae *AlgoEngine) processSingleTick(tick kitemodels.Tick) {
 	token := tick.InstrumentToken
+	log.Printf("Received tick for token %d: LastPrice %.2f", token, tick.LastPrice)
 
 	// Check if this stock is being tracked
 	trackedStock, exists := ae.trackingManager.GetStock(token)
-	if !exists {
+
+	if !exists || trackedStock.SellQuantity == 0 || trackedStock.Locked {
 		return
 	}
 
-	// Skip if already processed this minute
-	if ae.signalQueue.IsTokenProcessedThisMinute(token) {
+	// Safety: skip if BasePrice hasn't been set yet (e.g. after restart)
+	if trackedStock.BasePrice == 0 {
+		log.Printf("⚠️ Skipping signal for %s: BasePrice not set yet", trackedStock.TradingSymbol)
 		return
 	}
 
@@ -121,53 +125,65 @@ func (ae *AlgoEngine) processSingleTick(tick kitemodels.Tick) {
 	targetPrice := trackedStock.BasePrice + trackedStock.Target
 	stoplossPrice := trackedStock.BasePrice - trackedStock.StopLoss
 
-	var signal *TradeSignal
-
 	// Check for target hit (price >= target price)
 	if currentPrice >= targetPrice {
-		signal = &TradeSignal{
+		// Lock BEFORE sending signal to prevent duplicate signals from subsequent ticks
+		if !ae.trackingManager.TryLockStock(token) {
+			log.Printf("⚠️ Target hit for %d, but already locked. Skipping.", token)
+			return
+		}
+
+		signal := TradeSignal{
+			TrackingStockID: trackedStock.ID,
 			InstrumentToken: token,
-			StockSymbol:     trackedStock.StockSymbol,
+			TradingSymbol:   trackedStock.TradingSymbol,
 			Exchange:        trackedStock.Exchange,
 			SignalType:      SignalTargetHit,
 			TriggerPrice:    currentPrice,
 			BasePrice:       trackedStock.BasePrice,
 			Target:          trackedStock.Target,
 			StopLoss:        trackedStock.StopLoss,
-			Quantity:        trackedStock.Quantity,
+			Quantity:        trackedStock.SellQuantity,
 			Timestamp:       time.Now(),
 		}
-		ae.signalQueue.Push(*signal)
+		// make sell order and lock the stock until order is complete or cancelled
+		ae.sellOrderChan <- signal
 		log.Printf("🎯 Target hit for %s: Price %.2f >= Target %.2f (Base: %.2f)",
-			trackedStock.StockSymbol, currentPrice, targetPrice, trackedStock.BasePrice)
+			trackedStock.TradingSymbol, currentPrice, targetPrice, trackedStock.BasePrice)
 
 		return
 	}
 
 	// Check for stoploss hit (price <= stoploss price)
 	if currentPrice <= stoplossPrice {
-		signal = &TradeSignal{
+		// Lock BEFORE sending signal to prevent duplicate signals from subsequent ticks
+		if !ae.trackingManager.TryLockStock(token) {
+			log.Printf("⚠️ Stoploss hit for %d, but already locked. Skipping.", token)
+			return
+		}
+
+		signal := TradeSignal{
+			TrackingStockID: trackedStock.ID,
 			InstrumentToken: token,
-			StockSymbol:     trackedStock.StockSymbol,
+			TradingSymbol:   trackedStock.TradingSymbol,
 			Exchange:        trackedStock.Exchange,
 			SignalType:      SignalStopLossHit,
 			TriggerPrice:    currentPrice,
 			BasePrice:       trackedStock.BasePrice,
 			Target:          trackedStock.Target,
 			StopLoss:        trackedStock.StopLoss,
-			Quantity:        trackedStock.Quantity,
+			Quantity:        trackedStock.SellQuantity,
 			Timestamp:       time.Now(),
 		}
-		ae.signalQueue.Push(*signal)
+		// make sell order and lock the stock until order is complete or cancelled
+		ae.sellOrderChan <- signal
 		log.Printf("🛑 Stoploss hit for %s: Price %.2f <= Stoploss %.2f (Base: %.2f)",
-			trackedStock.StockSymbol, currentPrice, stoplossPrice, trackedStock.BasePrice)
+			trackedStock.TradingSymbol, currentPrice, stoplossPrice, trackedStock.BasePrice)
 
 		return
 	}
 
-}
+	log.Printf("No signal for %s: Price %.2f (Target: %.2f, Stoploss: %.2f)",
+		trackedStock.TradingSymbol, currentPrice, targetPrice, stoplossPrice)
 
-// GetSignalQueue returns the signal queue
-func (ae *AlgoEngine) GetSignalQueue() *SignalQueue {
-	return ae.signalQueue
 }

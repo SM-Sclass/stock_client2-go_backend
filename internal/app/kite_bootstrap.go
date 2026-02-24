@@ -3,10 +3,12 @@ package app
 import (
 	"context"
 	"log"
+	"time"
 
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/algo"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/kite"
 	kcws "github.com/SM-Sclass/stock_client2-go_backend/internal/kite/ws"
+	"github.com/SM-Sclass/stock_client2-go_backend/internal/models"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/order"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/scheduler"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/tracking"
@@ -28,32 +30,33 @@ func StartKiteRuntime(runtime *Runtime) error {
 		return err
 	}
 
+	// Start WebSocket connection
+	kiteWs.Start()
+	log.Println("🔌 WebSocket connection initiated")
+
 	trackingManager := tracking.NewTrackingManager(kiteWs)
-	signalQueue := algo.NewSignalQueue()
 
-	// Wire TrackingManager as the BasePriceUpdater for OrderService
-	// This breaks the circular dependency by using an interface
-	runtime.OrderSvc.SetBasePriceUpdater(trackingManager)
+	// Wire TrackingManager as the Manager for OrderService. This breaks the circular dependency by using an interface
+	runtime.OrderSvc.SetManager(trackingManager)
 
-	// Initialize AlgoEngine
+	sellOrderChan := make(chan algo.TradeSignal, 25)
+
 	algoEngine := algo.NewAlgoEngine(
 		trackingManager,
 		broadcaster,
-		signalQueue,
+		sellOrderChan,
 	)
 
-	// Initialize OrderEngine
 	orderEngine := order.NewOrderEngine(
 		runtime.KiteClient,
-		signalQueue,
+		trackingManager,
 		runtime.OrderSvc,
-		runtime.TrackingStockRepo,
+		sellOrderChan,
 	)
 
 	runtime.Broadcaster = broadcaster
 	runtime.KiteWS = kiteWs
 	runtime.TrackingManager = trackingManager
-	runtime.SignalQueue = signalQueue
 	runtime.AlgoEngine = algoEngine
 	runtime.OrderEngine = orderEngine
 	runtime.KiteReady = true
@@ -88,10 +91,10 @@ func SetupScheduler(runtime *Runtime) *scheduler.Scheduler {
 		),
 	)
 
-	// Job 3: Set stocks to AUTO_INACTIVE at 3:30 PM (market close)
+	// Job 3: Set stocks to AUTO_INACTIVE at 3:26 PM (market close)
 	sched.AddJob(
 		"MarketClose",
-		15, 30,
+		15, 26,
 		scheduler.CreateMarketCloseJob(
 			runtime.TrackingStockRepo,
 			runtime.TrackingManager,
@@ -106,8 +109,69 @@ func SetupScheduler(runtime *Runtime) *scheduler.Scheduler {
 	return sched
 }
 
-// LoadTrackedStocksOnStartup loads AUTO_INACTIVE stocks to tracking manager on server startup
-// This is called when Kite is authenticated and it's a trading day
+// Sync OrdersOnStartup syncs orders from Kite to DB on server startup
+func SyncOrdersOnStartup(runtime *Runtime) error {
+	if !utils.IsTradingDay() {
+		log.Println("⏸️ Not a trading day, skipping order sync")
+		return nil
+	}
+
+	orders, err := runtime.KiteClient.GetOrders()
+	if err != nil {
+		return err
+	}
+
+	istLoc, err := time.LoadLocation("Asia/Kolkata")
+	if err != nil {
+		log.Fatalf("Failed to load timezone: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	stocks, err := runtime.TrackingStockRepo.GetAllTrackingStocks(ctx)
+
+	currentYear, currentMonth, currentDay := time.Now().In(istLoc).Date()
+	for _, order := range orders {
+		orderTimeIST := order.OrderTimestamp.Time.In(istLoc)
+		orderYear, orderMonth, orderDay := orderTimeIST.Date()
+		if orderYear != currentYear || orderMonth != currentMonth || orderDay != currentDay {
+			continue
+		}
+
+		dbFormatOrder := &models.Order{
+			OrderID:         order.OrderID,
+			ExchangeOrderID: utils.ToNullString(order.ExchangeOrderID),
+			ParentOrderID:   utils.ToNullString(order.ParentOrderID),
+			TransactionType: utils.ToNullString(order.TransactionType),
+			OrderType:       order.OrderType,
+			EventType:       string(algo.SignalNone),
+			Quantity:        order.Quantity,
+			BasePrice:       order.TriggerPrice,
+			PurchasePrice:   utils.ToNullFloat(order.AveragePrice),
+			TriggerPrice:    utils.ToNullFloat(order.TriggerPrice),
+			Exchange:        order.Exchange,
+			Product:         utils.ToNullString(order.Product),
+			Status:          order.Status,
+			PlacedAt:        order.OrderTimestamp.Time,
+		}
+		for _, stock := range stocks {
+			if stock.TradingSymbol == order.TradingSymbol {
+				dbFormatOrder.TrackingStockID = stock.ID
+				break
+			}
+		}
+		err := runtime.OrderSvc.SyncOrder(dbFormatOrder)
+		if err != nil {
+			log.Printf("⚠️ Failed to sync order %s: %v", order.OrderID, err)
+		}
+	}
+
+	log.Printf("✅ Synced %d orders from Kite on startup", len(orders))
+	return nil
+
+}
+
+// LoadTrackedStocksOnStartup loads AUTO_INACTIVE stocks to tracking manager on server startup. This is called when Kite is authenticated and it's a trading day
 func LoadTrackedStocksOnStartup(runtime *Runtime) error {
 	if !utils.IsTradingDay() {
 		log.Println("⏸️ Not a trading day, skipping stock loading")
@@ -121,31 +185,49 @@ func LoadTrackedStocksOnStartup(runtime *Runtime) error {
 		return err
 	}
 
+	var trackingStocksId []int64
+	for _, stock := range stocks {
+		trackingStocksId = append(trackingStocksId, stock.ID)
+	}
+
+	imbalances, err := runtime.OrderSvc.AllStocksImbalance(trackingStocksId)
+	if err != nil {
+		log.Printf("⚠️ Failed to fetch order imbalances: %v", err)
+	} else {
+		log.Printf("📊 Order imbalances fetched for %d stocks", len(imbalances))
+	}
+
 	loadedCount := 0
 	for _, stock := range stocks {
-		if stock.Status != "AUTO_INACTIVE" {
+		log.Println("Stock: ", stock)
+		if stock.Status == "INACTIVE" {
 			continue
 		}
 
-		// Confirm instrument token from instrument service
-		instrument, exists := runtime.InstrumentSvc.NSESymbolToInstrument[stock.StockSymbol]
+		instrument, exists := runtime.InstrumentSvc.NSESymbolToInstrument[stock.TradingSymbol]
 		if !exists {
-			log.Printf("⚠️ Instrument not found for %s, skipping", stock.StockSymbol)
+			log.Printf("⚠️ Instrument not found for %s, skipping", stock.TradingSymbol)
 			continue
 		}
 
-		// Add to tracking manager
 		trackedStock := tracking.TrackedStock{
-			StockSymbol:     stock.StockSymbol,
+			ID:              stock.ID,
+			TradingSymbol:   stock.TradingSymbol,
 			InstrumentToken: uint32(instrument.InstrumentToken),
-			BasePrice:       0, // Will be set when first tick comes
+			BasePrice:       instrument.LastPrice,
 			Target:          stock.Target,
 			StopLoss:        stock.StopLoss,
-			Quantity:        stock.Quantity,
+			BuyQuantity:     stock.Quantity,
+			SellQuantity:    uint32(imbalances[stock.ID]),
+			Locked:          false,
 			Exchange:        stock.Exchange,
 		}
 		runtime.TrackingManager.AddTrackingStock(trackedStock)
 		loadedCount++
+
+		if err := runtime.TrackingStockRepo.UpdateTrackingStockStatus(ctx, stock.ID, "AUTO_ACTIVE"); err != nil {
+			log.Printf("⚠️ Failed to update status for %s: %v", stock.TradingSymbol, err)
+		}
 	}
 
 	log.Printf("📈 Loaded %d stocks to tracking manager on startup", loadedCount)

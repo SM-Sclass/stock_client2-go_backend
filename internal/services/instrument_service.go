@@ -4,22 +4,65 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
+	"errors"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/kite"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/repository"
 	kiteconnect "github.com/zerodha/gokiteconnect/v4"
+	"github.com/zerodha/gokiteconnect/v4/models"
 )
 
 type InstrumentService struct {
 	Kite                  *kite.KiteClient
 	Repo                  *repository.InstrumentRepository
-	NSEInstruments        []kiteconnect.Instrument
-	BSEInstruments        []kiteconnect.Instrument
-	NFOInstruments        []kiteconnect.Instrument
+	NSEInstruments        kiteconnect.Instruments
 	NSESymbolToInstrument map[string]kiteconnect.Instrument
 	NSETokenToInstrument  map[uint32]kiteconnect.Instrument
+}
+
+type DBInstrument struct {
+	InstrumentToken int     `json:"InstrumentToken"`
+	ExchangeToken   int     `json:"ExchangeToken"`
+	Tradingsymbol   string  `json:"Tradingsymbol"`
+	Name            string  `json:"Name"`
+	LastPrice       float64 `json:"LastPrice"`
+	Expiry          string  `json:"Expiry"` // string instead of time.Time
+	StrikePrice     float64 `json:"StrikePrice"`
+	TickSize        float64 `json:"TickSize"`
+	LotSize         float64 `json:"LotSize"`
+	InstrumentType  string  `json:"InstrumentType"`
+	Segment         string  `json:"Segment"`
+	Exchange        string  `json:"Exchange"`
+}
+
+func (s *InstrumentService) InitializeService() {
+	stale, err := s.IsInstrumentsDataStale()
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		fmt.Printf("Error checking if instruments data is stale: %v\n", err)
+	}
+	if stale || (err != nil && errors.Is(err, pgx.ErrNoRows)) {
+		err := s.FetchAndLoadInstruments()
+		if err != nil {
+			fmt.Printf("Error fetching and loading instruments: %v\n", err)
+			return
+		}
+		err = s.StoreInstrument()
+		if err != nil {
+			fmt.Printf("Error storing instruments: %v\n", err)
+			return
+		}
+	} else {
+		fmt.Println("Loading from DB")
+		err = s.LoadInstrumentFromDB()
+		if err != nil {
+			fmt.Printf("Error loading instruments from DB: %v\n", err)
+		}
+	}
+	s.BuildInstrumentMaps()
 }
 
 func (s *InstrumentService) FetchAndLoadInstruments() error {
@@ -32,14 +75,16 @@ func (s *InstrumentService) FetchAndLoadInstruments() error {
 	if err != nil {
 		return fmt.Errorf("failed to load NSE instruments: %v", err)
 	}
-	s.BSEInstruments, err = s.Kite.GetInstrumentsByExchange("BSE")
-	if err != nil {
-		return fmt.Errorf("failed to load BSE instruments: %v", err)
-	}
-	s.NFOInstruments, err = s.Kite.GetInstrumentsByExchange("NFO")
-	if err != nil {
-		return fmt.Errorf("failed to load NFO instruments: %v", err)
-	}
+	// s.BSEInstruments, err = s.Kite.GetInstrumentsByExchange("BSE")
+	// if err != nil {
+	// 	return fmt.Errorf("failed to load BSE instruments: %v", err)
+	// }
+	// s.NFOInstruments, err = s.Kite.GetInstrumentsByExchange("NFO")
+	// if err != nil {
+	// 	return fmt.Errorf("failed to load NFO instruments: %v", err)
+	// }
+
+	fmt.Printf("Fetched %d NSE instruments from Kite\n", len(s.NSEInstruments))
 
 	return nil
 }
@@ -49,18 +94,20 @@ func (s *InstrumentService) StoreInstrument() error {
 
 	// marshal instruments to JSON
 	nseBytes, _ := json.Marshal(s.NSEInstruments)
-	bseBytes, _ := json.Marshal(s.BSEInstruments)
-	nfoBytes, _ := json.Marshal(s.NFOInstruments)
+	// bseBytes, _ := json.Marshal(s.BSEInstruments)
+	// nfoBytes, _ := json.Marshal(s.NFOInstruments)
 
 	if _, err := s.Repo.UpsertInstruments(ctx, "NSE", nseBytes); err != nil {
 		return err
 	}
-	if _, err := s.Repo.UpsertInstruments(ctx, "BSE", bseBytes); err != nil {
-		return err
-	}
-	if _, err := s.Repo.UpsertInstruments(ctx, "NFO", nfoBytes); err != nil {
-		return err
-	}
+	// if _, err := s.Repo.UpsertInstruments(ctx, "BSE", bseBytes); err != nil {
+	// 	return err
+	// }
+	// if _, err := s.Repo.UpsertInstruments(ctx, "NFO", nfoBytes); err != nil {
+	// 	return err
+	// }
+
+	fmt.Printf("NSE instruments stored in DB of length %d bytes and OG length %d\n", len(nseBytes), len(s.NSEInstruments))
 
 	return nil
 }
@@ -69,24 +116,57 @@ func (s *InstrumentService) LoadInstrumentFromDB() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	exchanges := []string{"NSE", "BSE", "NFO"}
+	// exchanges := []string{"NSE"}
+	inst, err := s.Repo.GetInstrumentsByExchange(ctx, "NSE")
+	if err != nil {
+		return fmt.Errorf("failed to get instruments for exchange %s: %v", "NSE", err)
+	}
 
-	for _, exchange := range exchanges {
-		inst, err := s.Repo.GetInstrumentsByExchange(ctx, exchange)
-		if err != nil {
-			return fmt.Errorf("failed to get instruments for exchange %s: %v", exchange, err)
+	// deserialize JSON → []kiteconnect.Instrument
+	// json.Unmarshal(inst.InstrumentsData, &s.NSEInstruments)
+	// s.SaveInstrumentsToFile()
+	var temp []DBInstrument
+
+	err = json.Unmarshal(inst.InstrumentsData, &temp)
+	data, err := json.MarshalIndent(temp, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	// Write JSON to file
+	err = os.WriteFile("instrument.json", data, 0644)
+	if err != nil {
+		return fmt.Errorf("unmarshal failed: %v", err)
+	}
+
+	s.NSEInstruments = make(kiteconnect.Instruments, len(temp))
+
+	for i, dbInst := range temp {
+
+		var expiry models.Time
+		if dbInst.Expiry != "" {
+			t, err := time.Parse(time.RFC3339, dbInst.Expiry)
+			if err == nil {
+				expiry = models.Time{Time: t}
+			}
 		}
 
-		switch exchange {
-		case "NSE":
-			// deserialize JSON → []kiteconnect.Instrument
-			json.Unmarshal(inst.InstrumentsData, &s.NSEInstruments)
-		case "BSE":
-			json.Unmarshal(inst.InstrumentsData, &s.BSEInstruments)
-		case "NFO":
-			json.Unmarshal(inst.InstrumentsData, &s.NFOInstruments)
+		s.NSEInstruments[i] = kiteconnect.Instrument{
+			InstrumentToken: dbInst.InstrumentToken,
+			ExchangeToken:   dbInst.ExchangeToken,
+			Tradingsymbol:   dbInst.Tradingsymbol,
+			Name:            dbInst.Name,
+			Expiry:          expiry,
+			StrikePrice:     dbInst.StrikePrice,
+			TickSize:        dbInst.TickSize,
+			LotSize:         dbInst.LotSize,
+			InstrumentType:  dbInst.InstrumentType,
+			Segment:         dbInst.Segment,
+			Exchange:        dbInst.Exchange,
 		}
 	}
+
+	fmt.Printf("Loaded %d NSE instruments from DB\n", len(s.NSEInstruments))
 
 	return nil
 }
@@ -94,6 +174,8 @@ func (s *InstrumentService) LoadInstrumentFromDB() error {
 func (s *InstrumentService) BuildInstrumentMaps() {
 	s.NSESymbolToInstrument = make(map[string]kiteconnect.Instrument)
 	s.NSETokenToInstrument = make(map[uint32]kiteconnect.Instrument)
+
+	fmt.Printf("Building maps for %d NSE instruments\n", len(s.NSEInstruments))
 
 	for _, inst := range s.NSEInstruments {
 		s.NSESymbolToInstrument[inst.Tradingsymbol] = inst
@@ -105,13 +187,13 @@ func (s *InstrumentService) IsInstrumentsDataStale() (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	exchanges := []string{"NSE", "BSE", "NFO"}
+	exchanges := []string{"NSE"}
 	now := time.Now().UTC()
 
 	for _, exchange := range exchanges {
 		inst, err := s.Repo.GetStoredDateByExchange(ctx, exchange)
 		if err != nil {
-			return false, fmt.Errorf("failed to get instruments for exchange %s: %v", exchange, err)
+			return false, err
 		}
 		stored := inst.StoredAt.UTC()
 
@@ -128,14 +210,37 @@ func (s *InstrumentService) IsInstrumentsDataStale() (bool, error) {
 	return false, nil
 }
 
-func (s *InstrumentService) GetSearchedInstrumentByName(name string) (*kiteconnect.Instrument, error) {
-	search := strings.ToLower(name)
+func (s *InstrumentService) GetSearchedInstrumentByName(name string) ([]kiteconnect.Instrument, error) {
+	search := strings.ToUpper(name)
+	var results []kiteconnect.Instrument
+
+	fmt.Println("Total NSE Instruments:", len(s.NSEInstruments))
 
 	for _, inst := range s.NSEInstruments {
-		if strings.Contains(strings.ToLower(inst.Name), search) {
-			return &inst, nil
+		if strings.Contains(inst.Name, search) {
+			results = append(results, inst)
 		}
 	}
 
-	return nil, fmt.Errorf("instrument not found for name: %s", name)
+	if len(results) == 0 {
+		return nil, fmt.Errorf("instrument not found for name: %s", name)
+	}
+	return results, nil
+}
+
+func (s *InstrumentService) SaveInstrumentsToFile() error {
+
+	// Convert struct slice → JSON bytes
+	data, err := json.MarshalIndent(s.NSEInstruments, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	// Write JSON to file
+	err = os.WriteFile("instrument.json", data, 0644)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }

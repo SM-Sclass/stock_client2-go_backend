@@ -6,12 +6,14 @@ import (
 
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/app"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/kite"
+	"github.com/SM-Sclass/stock_client2-go_backend/internal/services"
 	"github.com/gin-gonic/gin"
 )
 
 type KiteCallbackHandler struct {
-	Kc      *kite.KiteClient
-	Runtime *app.Runtime
+	Kc                *kite.KiteClient
+	Runtime           *app.Runtime
+	InstrumentService *services.InstrumentService
 }
 
 func (h *KiteCallbackHandler) KiteCallback(c *gin.Context) {
@@ -33,10 +35,17 @@ func (h *KiteCallbackHandler) KiteCallback(c *gin.Context) {
 		return
 	}
 
+	h.InstrumentService.InitializeService()
+
 	if err := app.StartKiteRuntime(h.Runtime); err != nil {
 		log.Printf("⚠️ runtime start failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "kite authenticated but runtime failed to start"})
 		return
+	}
+
+	// Sync orders first (needed for imbalance & BasePrice on restart)
+	if err := app.SyncOrdersOnStartup(h.Runtime); err != nil {
+		log.Printf("⚠️ Failed to sync orders: %v", err)
 	}
 
 	// Load tracked stocks after successful auth

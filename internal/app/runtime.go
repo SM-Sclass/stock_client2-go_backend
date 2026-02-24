@@ -28,7 +28,7 @@ type Runtime struct {
 	// Engines
 	AlgoEngine  *algo.AlgoEngine
 	OrderEngine *order.OrderEngine
-	SignalQueue *algo.SignalQueue
+	// SignalQueue *algo.SignalQueue
 
 	// Scheduler
 	Scheduler *scheduler.Scheduler

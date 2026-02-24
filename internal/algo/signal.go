@@ -7,11 +7,13 @@ type SignalType string
 const (
 	SignalTargetHit   SignalType = "TARGET_HIT"
 	SignalStopLossHit SignalType = "STOPLOSS_HIT"
+	SignalNone        SignalType = "NONE"
 )
 
 type TradeSignal struct {
+	TrackingStockID int64
 	InstrumentToken uint32
-	StockSymbol     string
+	TradingSymbol   string
 	Exchange        string
 	SignalType      SignalType
 	TriggerPrice    float64

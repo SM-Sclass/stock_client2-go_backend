@@ -4,24 +4,32 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/models"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/repository"
+	"github.com/SM-Sclass/stock_client2-go_backend/internal/utils"
+
 	kiteconnect "github.com/zerodha/gokiteconnect/v4"
 )
 
-// BasePriceUpdater is implemented by TrackingManager to update base price
-// when an order completes. Using an interface avoids circular dependency.
-type BasePriceUpdater interface {
+// BasePriceUpdater is implemented by TrackingManager to update base price. when an order completes. Using an interface avoids circular dependency.
+type Manager interface {
 	UpdateBasePrice(instrumentToken uint32, price float64)
+	UnlockStock(instrumentToken uint32)
+	SetSellQuantity(instrumentToken uint32, quantity uint32)
+	GetStockIDByTradingSymbol(tradingSymbol string) (int64, bool)
 }
 
 type OrderRepo interface {
 	AddOrder(ctx context.Context, o *models.Order) (ID int64, err error)
 	UpdateOrder(ctx context.Context, o *models.Order, ID int64) error
 	GetOrderByKiteOrderID(ctx context.Context, orderID string) (*models.Order, error)
+	GetAllStocksOrderImbalance(ctx context.Context, trackingStockIds []int64) (imbalances []repository.OrderImabalance, err error)
+	UpsertOrder(ctx context.Context, o *models.Order) (int64, error)
 }
 
 type TrackingStockRepo interface {
@@ -31,10 +39,11 @@ type TrackingStockRepo interface {
 type OrderService struct {
 	OrderRepo         OrderRepo
 	TrackingStockRepo TrackingStockRepo
-	BasePriceUpdater  BasePriceUpdater
-	now               func() time.Time
-	pendingUpdates    map[string]pendingOrderUpdate
-	mu                sync.Mutex
+	Manager           Manager
+
+	now            func() time.Time
+	pendingUpdates map[string]pendingOrderUpdate
+	mu             sync.Mutex
 }
 
 const pendingUpdateTTL = 2 * time.Minute
@@ -44,10 +53,9 @@ type pendingOrderUpdate struct {
 	receivedAt time.Time
 }
 
-// SetBasePriceUpdater sets the BasePriceUpdater after TrackingManager is initialized.
-// This is needed to avoid circular dependency during initialization.
-func (s *OrderService) SetBasePriceUpdater(updater BasePriceUpdater) {
-	s.BasePriceUpdater = updater
+// SetManager sets the Manager after TrackingManager is initialized. This is needed to avoid circular dependency during initialization.
+func (s *OrderService) SetManager(manager Manager) {
+	s.Manager = manager
 }
 
 func (s *OrderService) nowTime() time.Time {
@@ -106,39 +114,139 @@ func (s *OrderService) AddPlacedOrder(ctx context.Context, order *models.Order) 
 }
 
 func (s *OrderService) ProcessOrderUpdate(ctx context.Context, orderUpdate kiteconnect.Order) error {
-	order, err := s.OrderRepo.GetOrderByKiteOrderID(ctx, orderUpdate.OrderID)
+	_, err := s.OrderRepo.GetOrderByKiteOrderID(ctx, orderUpdate.OrderID)
 	if err != nil {
-		if errors.Is(err, repository.ErrOrderNotFound) {
+		if !errors.Is(err, pgx.ErrNoRows) {
 			s.cachePendingUpdate(orderUpdate)
-			return nil
+			return fmt.Errorf("failed to get order %s: %v", orderUpdate.OrderID, err)
 		}
-		return fmt.Errorf("failed to get order %s: %v", orderUpdate.OrderID, err)
+		log.Printf("Failed to get order but continued %s: %v", orderUpdate.OrderID, err)
+	}
+	
+	stockID, exists := s.Manager.GetStockIDByTradingSymbol(orderUpdate.TradingSymbol)
+	if !exists {
+		log.Printf("⚠️ No tracking stock found for trading symbol %s in order update %s", orderUpdate.TradingSymbol, orderUpdate.OrderID)
+		return nil
 	}
 
-	order.ExchangeOrderID = orderUpdate.ExchangeOrderID
-	order.ParentOrderID = orderUpdate.ParentOrderID
-	order.TransactionType = orderUpdate.TransactionType
-	order.Exchange = orderUpdate.Exchange
-	order.Product = orderUpdate.Product
-	order.Quantity = orderUpdate.Quantity
-	order.TriggerPrice = orderUpdate.TriggerPrice
-	order.PurchasePrice = orderUpdate.AveragePrice
-	order.StatusMessage = orderUpdate.StatusMessage
-	order.Status = orderUpdate.Status
-	order.UpdatedAt = time.Now()
+	dbOrder := &models.Order{
+		OrderID:         orderUpdate.OrderID,
+		TrackingStockID: stockID,
+		OrderType:       orderUpdate.OrderType,       
 
-	if err := s.OrderRepo.UpdateOrder(ctx, order, order.ID); err != nil {
+		ExchangeOrderID: utils.ToNullString(orderUpdate.ExchangeOrderID),
+		ParentOrderID:   utils.ToNullString(orderUpdate.ParentOrderID),
+		TransactionType: utils.ToNullString(orderUpdate.TransactionType),
+		Exchange:        orderUpdate.Exchange,
+		Product:         utils.ToNullString(orderUpdate.Product),
+		Quantity:        orderUpdate.FilledQuantity,  // Using FilledQuantity for updates
+		TriggerPrice:    utils.ToNullFloat(orderUpdate.TriggerPrice),
+		PurchasePrice:   utils.ToNullFloat(orderUpdate.AveragePrice),
+		StatusMessage:   utils.ToNullString(orderUpdate.StatusMessage),
+		Status:          orderUpdate.Status,
+		PlacedAt:        orderUpdate.OrderTimestamp.Time, 
+	}
+
+	if _, err := s.OrderRepo.UpsertOrder(ctx, dbOrder); err != nil {
 		return fmt.Errorf("failed to update order %s: %v", orderUpdate.OrderID, err)
 	}
 
-	// On successful COMPLETE, update the tracking stock basePrice with AveragePrice
-	if orderUpdate.Status == "COMPLETE" && s.BasePriceUpdater != nil {
-		// Get the tracking stock to find the instrument token
-		trackingStock, err := s.TrackingStockRepo.GetTrackingStockByID(ctx, order.TrackingStockID)
-		if err == nil && trackingStock != nil {
-			s.BasePriceUpdater.UpdateBasePrice(uint32(trackingStock.InstrumentToken), orderUpdate.AveragePrice)
+	if s.Manager == nil {
+		return nil
+	}
+
+	token := uint32(orderUpdate.InstrumentToken)
+
+	switch orderUpdate.Status {
+
+	case "COMPLETE":
+		if orderUpdate.TransactionType == kiteconnect.TransactionTypeBuy {
+			s.Manager.SetSellQuantity(token, uint32(orderUpdate.FilledQuantity))
+
+		} else if orderUpdate.TransactionType == kiteconnect.TransactionTypeSell {
+
+			remainingQty := orderUpdate.Quantity - orderUpdate.FilledQuantity
+			s.Manager.SetSellQuantity(token, uint32(remainingQty))
+
+			if remainingQty != 0 {
+				log.Printf("⚠️ Partial SELL even in COMPLETE? token=%d", token)
+				return nil
+			}
 		}
+
+		// ✅ Only here:
+		s.Manager.UpdateBasePrice(token, orderUpdate.AveragePrice)
+		s.Manager.UnlockStock(token) // unlock
+
+	case "PARTIALLY_FILLED":
+		remainingQty := orderUpdate.Quantity - orderUpdate.FilledQuantity
+
+		s.Manager.SetSellQuantity(token, uint32(remainingQty))
+
+		log.Printf("⏳ Partial fill: token=%d filled=%f remaining=%f",
+			token,
+			orderUpdate.FilledQuantity,
+			remainingQty,
+		)
+
+		// ❌ DO NOT unlock
+		return nil
+
+	case "REJECTED":
+		log.Printf("❌ Order REJECTED: token=%d reason=%s",
+			token,
+			orderUpdate.StatusMessage,
+		)
+
+		s.Manager.UnlockStock(token)
+		return nil
+
+	case "CANCELLED":
+		remainingQty := orderUpdate.Quantity - orderUpdate.FilledQuantity
+
+		log.Printf("🚫 Order CANCELLED: token=%d remaining=%f",
+			token,
+			remainingQty,
+		)
+
+		s.Manager.SetSellQuantity(token, uint32(remainingQty))
+		s.Manager.UnlockStock(token)
+
+		return nil
 	}
 
 	return nil
+}
+
+func (s *OrderService) AllStocksImbalance(trackingStockIds []int64) (map[int64]int, error) {
+	imbalances, err := s.OrderRepo.GetAllStocksOrderImbalance(context.Background(), trackingStockIds)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return make(map[int64]int), nil // No imbalances found, return empty map
+		}
+		return nil, err
+	}
+
+	result := make(map[int64]int)
+	for _, imbalance := range imbalances {
+		result[imbalance.TrackingStockID] = imbalance.Imbalance
+	}
+	return result, nil
+}
+
+func (s *OrderService) SyncOrder(order *models.Order) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	existingOrder, err := s.OrderRepo.GetOrderByKiteOrderID(ctx, order.OrderID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			err := s.AddPlacedOrder(ctx, order)
+			return err
+		}
+		return err
+	}
+
+	order.UpdatedAt = time.Now()
+	return s.OrderRepo.UpdateOrder(ctx, order, existingOrder.ID)
 }

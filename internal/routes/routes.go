@@ -16,8 +16,12 @@ func RegisterRoutes(
 ) {
 	api := router.Group("/api/v1")
 
-	api.POST("/login", authHandler.Login)
-	api.POST("/signup", authHandler.Signup)
+	api.POST("/auth/login", authHandler.Login)
+	api.POST("/auth/signup", authHandler.Signup)
+	api.POST("/auth/logout", authHandler.Logout)
+
+	// Kite Callback Route
+	api.GET("/kite/callback", kiteCallbackHandler.KiteCallback)
 
 	protected := api.Group("/")
 	protected.Use(middleware.AuthMiddleware())
@@ -31,18 +35,13 @@ func RegisterRoutes(
 	protected.PATCH("/tracking-stocks/:id/start", trackingStockHandler.UpdateStatusToStart)
 	protected.PATCH("/tracking-stocks/:id/stop", trackingStockHandler.UpdateStatusToStop)
 
-	// Kite Callback Route
-	router.GET("/kite/callback", kiteCallbackHandler.KiteCallback)
-
 	// Order Routes
 	protected.GET("/orders", orderHandler.GetAllOrders)
-	protected.GET("/tracking-stocks/:id/orders", orderHandler.GetStockOrders)
+	protected.GET("/orders/tracking-stocks/:id", orderHandler.GetStockOrders)
 
 	// Stock Query Route
 	protected.GET("/stocks/search", stockQueryHandler.GetSearchedStock)
 
-	protected.GET("/profile", func(c *gin.Context) {
-		userID, _ := c.Get("user_id")
-		c.JSON(200, gin.H{"user_id": userID})
-	})
+	// User Profile Route
+	protected.GET("/user/profile", authHandler.Profile)
 }

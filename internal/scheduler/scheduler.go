@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/repository"
-	"github.com/SM-Sclass/stock_client2-go_backend/internal/tracking"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/services"
+	"github.com/SM-Sclass/stock_client2-go_backend/internal/tracking"
 )
 
 var ist = time.FixedZone("IST", 5*60*60+30*60) // UTC+5:30
@@ -32,7 +32,6 @@ func NewScheduler() *Scheduler {
 		stopChan: make(chan struct{}),
 	}
 }
-
 
 func (s *Scheduler) AddJob(name string, hour, minute int, runFunc func() error) {
 	job := &CronJob{
@@ -111,7 +110,6 @@ func (s *Scheduler) checkAndRunJobs() {
 	}
 }
 
-
 func (s *Scheduler) RunJobNow(name string) error {
 	for _, job := range s.jobs {
 		if job.Name == name {
@@ -121,7 +119,6 @@ func (s *Scheduler) RunJobNow(name string) error {
 	}
 	return nil
 }
-
 
 func CreateInstrumentFetchJob(instrumentSvc *services.InstrumentService) func() error {
 	return func() error {
@@ -140,7 +137,6 @@ func CreateInstrumentFetchJob(instrumentSvc *services.InstrumentService) func() 
 		return nil
 	}
 }
-
 
 func CreateMarketOpenJob(
 	trackingRepo *repository.TrackingStocksRepository,
@@ -162,33 +158,33 @@ func CreateMarketOpenJob(
 		// Load stocks to tracking manager with confirmed instrument tokens
 		for _, stock := range stocks {
 			// Confirm instrument token from instrument service
-			instrument, exists := instrumentSvc.NSESymbolToInstrument[stock.StockSymbol]
+			instrument, exists := instrumentSvc.NSESymbolToInstrument[stock.TradingSymbol]
 			if !exists {
-				log.Printf("⚠️ Instrument not found for %s, skipping", stock.StockSymbol)
+				log.Printf("⚠️ Instrument not found for %s, skipping", stock.TradingSymbol)
 				continue
 			}
 
-			
 			trackedStock := tracking.TrackedStock{
-				StockSymbol:     stock.StockSymbol,
+				ID:              stock.ID,
+				TradingSymbol:   stock.TradingSymbol,
 				InstrumentToken: uint32(instrument.InstrumentToken),
 				BasePrice:       0, // Will be set when first tick comes
 				Target:          stock.Target,
 				StopLoss:        stock.StopLoss,
-				Quantity:        stock.Quantity,
+				BuyQuantity:     stock.Quantity,
+				SellQuantity:    0,
+				Locked:          false,
 				Exchange:        stock.Exchange,
 			}
 			trackingManager.AddTrackingStock(trackedStock)
 
-			
 			if err := trackingRepo.UpdateTrackingStockStatus(ctx, stock.ID, "AUTO_ACTIVE"); err != nil {
-				log.Printf("⚠️ Failed to update status for %s: %v", stock.StockSymbol, err)
+				log.Printf("⚠️ Failed to update status for %s: %v", stock.TradingSymbol, err)
 			}
 		}
 
 		log.Printf("📈 Loaded %d stocks to tracking manager", trackingManager.CountStocks())
 
-		
 		if startAlgoFunc != nil {
 			return startAlgoFunc()
 		}
@@ -196,7 +192,6 @@ func CreateMarketOpenJob(
 		return nil
 	}
 }
-
 
 func CreateMarketCloseJob(
 	trackingRepo *repository.TrackingStocksRepository,
@@ -218,7 +213,7 @@ func CreateMarketCloseJob(
 		for _, stock := range stocks {
 			if stock.Status == "AUTO_ACTIVE" || stock.Status == "ACTIVE" {
 				if err := trackingRepo.UpdateTrackingStockStatus(ctx, stock.ID, "AUTO_INACTIVE"); err != nil {
-					log.Printf("⚠️ Failed to update status for %s: %v", stock.StockSymbol, err)
+					log.Printf("⚠️ Failed to update status for %s: %v", stock.TradingSymbol, err)
 				}
 			}
 		}
