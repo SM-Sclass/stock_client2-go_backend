@@ -3,15 +3,16 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
-	"errors"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/kite"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/repository"
+	"github.com/jackc/pgx/v5"
 	kiteconnect "github.com/zerodha/gokiteconnect/v4"
 	"github.com/zerodha/gokiteconnect/v4/models"
 )
@@ -42,24 +43,24 @@ type DBInstrument struct {
 func (s *InstrumentService) InitializeService() {
 	stale, err := s.IsInstrumentsDataStale()
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		fmt.Printf("Error checking if instruments data is stale: %v\n", err)
+		log.Printf("⚠️ failed to check instrument staleness: %v", err)
 	}
 	if stale || (err != nil && errors.Is(err, pgx.ErrNoRows)) {
 		err := s.FetchAndLoadInstruments()
 		if err != nil {
-			fmt.Printf("Error fetching and loading instruments: %v\n", err)
+			log.Printf("❌ failed to fetch/load instruments from Kite: %v", err)
 			return
 		}
 		err = s.StoreInstrument()
 		if err != nil {
-			fmt.Printf("Error storing instruments: %v\n", err)
+			log.Printf("❌ failed to persist instruments: %v", err)
 			return
 		}
 	} else {
-		fmt.Println("Loading from DB")
+		log.Println("📦 loading instruments from DB cache")
 		err = s.LoadInstrumentFromDB()
 		if err != nil {
-			fmt.Printf("Error loading instruments from DB: %v\n", err)
+			log.Printf("❌ failed to load instruments from DB: %v", err)
 		}
 	}
 	s.BuildInstrumentMaps()
@@ -76,7 +77,7 @@ func (s *InstrumentService) FetchAndLoadInstruments() error {
 		return fmt.Errorf("failed to load NSE instruments: %v", err)
 	}
 
-	fmt.Printf("Fetched %d NSE instruments from Kite\n", len(s.NSEInstruments))
+	log.Printf("✅ fetched %d NSE instruments from Kite", len(s.NSEInstruments))
 
 	return nil
 }
@@ -90,7 +91,7 @@ func (s *InstrumentService) StoreInstrument() error {
 		return err
 	}
 
-	fmt.Printf("NSE instruments stored in DB of length %d bytes and OG length %d\n", len(nseBytes), len(s.NSEInstruments))
+	log.Printf("💾 stored %d NSE instruments (%d bytes) in DB", len(s.NSEInstruments), len(nseBytes))
 
 	return nil
 }
@@ -149,7 +150,7 @@ func (s *InstrumentService) LoadInstrumentFromDB() error {
 		}
 	}
 
-	fmt.Printf("Loaded %d NSE instruments from DB\n", len(s.NSEInstruments))
+	log.Printf("✅ loaded %d NSE instruments from DB", len(s.NSEInstruments))
 
 	return nil
 }
@@ -158,7 +159,7 @@ func (s *InstrumentService) BuildInstrumentMaps() {
 	s.NSESymbolToInstrument = make(map[string]kiteconnect.Instrument)
 	s.NSETokenToInstrument = make(map[uint32]kiteconnect.Instrument)
 
-	fmt.Printf("Building maps for %d NSE instruments\n", len(s.NSEInstruments))
+	log.Printf("🧭 building symbol/token index maps for %d NSE instruments", len(s.NSEInstruments))
 
 	for _, inst := range s.NSEInstruments {
 		s.NSESymbolToInstrument[inst.Tradingsymbol] = inst
@@ -197,7 +198,7 @@ func (s *InstrumentService) GetSearchedInstrumentByName(name string) ([]kiteconn
 	search := strings.ToUpper(name)
 	var results []kiteconnect.Instrument
 
-	fmt.Println("Total NSE Instruments:", len(s.NSEInstruments))
+	log.Printf("🔎 searching in %d NSE instruments", len(s.NSEInstruments))
 
 	for _, inst := range s.NSEInstruments {
 		if strings.Contains(inst.Name, search) {

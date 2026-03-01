@@ -2,6 +2,7 @@ package kite
 
 import (
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/config"
@@ -37,7 +38,7 @@ func (kc *KiteClient) GenerateSession(requestToken string) error {
 		return err
 	}
 
-	fmt.Println("Session: ", session)
+	log.Printf("✅ kite session generated for user %s", session.UserName)
 
 	// Save token
 	token := &KiteToken{
