@@ -100,7 +100,6 @@ func (ae *AlgoEngine) processTicks(ticks []kitemodels.Tick) {
 // processSingleTick processes a single tick against tracked stocks
 func (ae *AlgoEngine) processSingleTick(tick kitemodels.Tick) {
 	token := tick.InstrumentToken
-	log.Printf("Received tick for token %d: LastPrice %.2f", token, tick.LastPrice)
 
 	// Check if this stock is being tracked
 	trackedStock, exists := ae.trackingManager.GetStock(token)
@@ -148,8 +147,7 @@ func (ae *AlgoEngine) processSingleTick(tick kitemodels.Tick) {
 		}
 		// make sell order and lock the stock until order is complete or cancelled
 		ae.sellOrderChan <- signal
-		log.Printf("🎯 Target hit for %s: Price %.2f >= Target %.2f (Base: %.2f)",
-			trackedStock.TradingSymbol, currentPrice, targetPrice, trackedStock.BasePrice)
+		log.Printf("🎯 Target hit for %s: Price %.2f >= Target %.2f (Base: %.2f)", trackedStock.TradingSymbol, currentPrice, targetPrice, trackedStock.BasePrice)
 
 		return
 	}
@@ -182,8 +180,4 @@ func (ae *AlgoEngine) processSingleTick(tick kitemodels.Tick) {
 
 		return
 	}
-
-	log.Printf("No signal for %s: Price %.2f (Target: %.2f, Stoploss: %.2f)",
-		trackedStock.TradingSymbol, currentPrice, targetPrice, stoplossPrice)
-
 }

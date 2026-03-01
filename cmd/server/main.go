@@ -82,6 +82,7 @@ func main() {
 	orderHandler := &handlers.OrderHandler{OrderRepo: orderRepo}
 	kiteCallbackHandler := &handlers.KiteCallbackHandler{Kc: kiteClient, Runtime: runtime, InstrumentService: instrumentSvc}
 	stockQueryHandler := &handlers.StockQueryHandler{InstrumentService: instrumentSvc}
+	systemHandler := &handlers.SystemHandler{InstrumentService: instrumentSvc, Kc: kiteClient, Runtime: runtime}
 
 	router := gin.Default()
 	router.Use(cors.New(cors.Config{
@@ -98,7 +99,8 @@ func main() {
 		trackingStockHandler,
 		kiteCallbackHandler,
 		orderHandler,
-		stockQueryHandler)
+		stockQueryHandler,
+		systemHandler)
 
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{

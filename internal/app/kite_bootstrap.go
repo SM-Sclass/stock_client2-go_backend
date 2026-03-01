@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -21,6 +22,10 @@ func StartKiteRuntime(runtime *Runtime) error {
 
 	if runtime.KiteReady {
 		return nil
+	}
+
+	if !runtime.KiteClient.IsTokenValid() {
+		return fmt.Errorf("kite token is not valid")
 	}
 
 	broadcaster := kite.NewTickBroadcaster()
@@ -210,11 +215,27 @@ func LoadTrackedStocksOnStartup(runtime *Runtime) error {
 			continue
 		}
 
+		instStr := fmt.Sprintf("%s:%s", stock.Exchange, stock.TradingSymbol)
+
+		// Get LTP using the symbol string
+		Ltp, err := runtime.KiteClient.KiteConnect.GetLTP(instStr)
+		if err != nil {
+			log.Printf("⚠️ Failed to get LTP for %s: %v", stock.TradingSymbol, err)
+			continue
+		}
+
+		// Access the result using the same key
+		quote, exists := Ltp[instStr]
+		if !exists {
+			log.Printf("⚠️ No data returned for %s", instStr)
+			continue
+		}
+
 		trackedStock := tracking.TrackedStock{
 			ID:              stock.ID,
 			TradingSymbol:   stock.TradingSymbol,
 			InstrumentToken: uint32(instrument.InstrumentToken),
-			BasePrice:       instrument.LastPrice,
+			BasePrice:       quote.LastPrice,
 			Target:          stock.Target,
 			StopLoss:        stock.StopLoss,
 			BuyQuantity:     stock.Quantity,

@@ -75,14 +75,6 @@ func (s *InstrumentService) FetchAndLoadInstruments() error {
 	if err != nil {
 		return fmt.Errorf("failed to load NSE instruments: %v", err)
 	}
-	// s.BSEInstruments, err = s.Kite.GetInstrumentsByExchange("BSE")
-	// if err != nil {
-	// 	return fmt.Errorf("failed to load BSE instruments: %v", err)
-	// }
-	// s.NFOInstruments, err = s.Kite.GetInstrumentsByExchange("NFO")
-	// if err != nil {
-	// 	return fmt.Errorf("failed to load NFO instruments: %v", err)
-	// }
 
 	fmt.Printf("Fetched %d NSE instruments from Kite\n", len(s.NSEInstruments))
 
@@ -94,18 +86,9 @@ func (s *InstrumentService) StoreInstrument() error {
 
 	// marshal instruments to JSON
 	nseBytes, _ := json.Marshal(s.NSEInstruments)
-	// bseBytes, _ := json.Marshal(s.BSEInstruments)
-	// nfoBytes, _ := json.Marshal(s.NFOInstruments)
-
 	if _, err := s.Repo.UpsertInstruments(ctx, "NSE", nseBytes); err != nil {
 		return err
 	}
-	// if _, err := s.Repo.UpsertInstruments(ctx, "BSE", bseBytes); err != nil {
-	// 	return err
-	// }
-	// if _, err := s.Repo.UpsertInstruments(ctx, "NFO", nfoBytes); err != nil {
-	// 	return err
-	// }
 
 	fmt.Printf("NSE instruments stored in DB of length %d bytes and OG length %d\n", len(nseBytes), len(s.NSEInstruments))
 

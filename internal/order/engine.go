@@ -128,7 +128,6 @@ func (oe *OrderEngine) ProcessBuying() {
 	}
 
 	for _, stock := range stocks {
-		log.Printf("Placing buy order for %s with imbalance %d", stock.TradingSymbol, stock.SellQuantity)
 		oe.processBuySignal(stock)
 	}
 
@@ -163,9 +162,6 @@ func (oe *OrderEngine) processBuySignal(stock tracking.TrackedStock) {
 		oe.trackingManager.UnlockStock(stock.InstrumentToken) // Unlock on failure
 		return
 	}
-
-	log.Printf("✅ Order placed for %s: OrderID=%s, Type=%s",
-		stock.TradingSymbol, orderResponse.OrderID, kiteconnect.TransactionTypeBuy)
 
 	order := &models.Order{
 		TrackingStockID: stock.ID,
@@ -209,11 +205,9 @@ func (oe *OrderEngine) processSellSignal(signal algo.TradeSignal) {
 		TransactionType: kiteconnect.TransactionTypeSell,
 		Quantity:        int(sellQty),
 		Product:         kiteconnect.ProductMIS, // Intraday
-		OrderType:       kiteconnect.OrderTypeLimit,
+		OrderType:       kiteconnect.OrderTypeMarket,
 		Validity:        kiteconnect.ValidityDay,
 	}
-
-	log.Printf("Order Params: %+v", orderParams)
 
 	orderResponse, err := oe.kiteClient.PlaceRegularOrder(orderParams)
 	if err != nil {
@@ -222,7 +216,7 @@ func (oe *OrderEngine) processSellSignal(signal algo.TradeSignal) {
 		return
 	}
 
-	log.Printf("✅ Order placed for %s: OrderID=%s, Type=%s", signal.TradingSymbol, orderResponse.OrderID, "SELL")
+	// log.Printf("✅ Order placed for %s: OrderID=%s, Type=%s", signal.TradingSymbol, orderResponse.OrderID, "SELL")
 
 	order := &models.Order{
 		TrackingStockID: signal.TrackingStockID,

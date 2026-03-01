@@ -13,6 +13,7 @@ func RegisterRoutes(
 	kiteCallbackHandler *handlers.KiteCallbackHandler,
 	orderHandler *handlers.OrderHandler,
 	stockQueryHandler *handlers.StockQueryHandler,
+	systemHandler *handlers.SystemHandler,
 ) {
 	api := router.Group("/api/v1")
 
@@ -44,4 +45,6 @@ func RegisterRoutes(
 
 	// User Profile Route
 	protected.GET("/user/profile", authHandler.Profile)
+
+	protected.GET("/system/status", systemHandler.SystemStatus)
 }

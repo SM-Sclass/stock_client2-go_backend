@@ -9,11 +9,11 @@ import (
 )
 
 type KiteClient struct {
-	KiteConnect     *kiteconnect.Client
-	APIKey          string
-	APISecret       string
-	CallbackURL     string
-	AccessToken     string
+	KiteConnect *kiteconnect.Client
+	APIKey      string
+	APISecret   string
+	CallbackURL string
+	AccessToken string
 }
 
 func NewKiteClient() *KiteClient {

@@ -45,11 +45,11 @@ func NewKiteWS(kc *kite.KiteClient, bus *kite.TickBroadcaster, orderService *ser
 		log.Println("WebSocket connected")
 	})
 
-	ws.OnClose(func (code int, reason string) {
+	ws.OnClose(func(code int, reason string) {
 		k.isConnected = false
 		log.Printf("WebSocket closed: code=%d, reason=%s", code, reason)
-	})
-
+	})  
+    
 	ws.OnError(func(err error) {
 		k.isConnected = false
 		log.Printf("WebSocket error: %v", err)
@@ -59,7 +59,7 @@ func NewKiteWS(kc *kite.KiteClient, bus *kite.TickBroadcaster, orderService *ser
 	// 	log.Printf("WebSocket message received: type=%d, message=%s", messageType, string(message))
 	// })
 
-	ws.OnReconnect(func(attempt int, delay time.Duration){
+	ws.OnReconnect(func(attempt int, delay time.Duration) {
 		log.Printf("Websocket reconnecting attempt: %d, delay: %d", attempt, delay)
 	})
 
