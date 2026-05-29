@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/models"
+	"github.com/SM-Sclass/stock_client2-go_backend/internal/config"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/repository"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/services"
 	"github.com/gin-gonic/gin"
@@ -42,31 +43,40 @@ func (h *AuthHandler) Login(c *gin.Context) {
 
 	user, err := h.UserRepo.GetByPhone(c.Request.Context(), req.Phone)
 	if err != nil {
+		log.Printf("Error fetching user: %v", err)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
 
 	if err := services.CheckPassword(user.Password, req.Password); err != nil {
+		log.Printf("Error checking password: %v", err)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
 
 	token, err := services.GenerateToken(user.ID)
 	if err != nil {
+		log.Printf("Error generating token: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "token generation failed"})
 		return
+	}
+
+	isProduction := config.ServerConfig.GoEnv == "production"
+	sameSiteMode := http.SameSiteNoneMode
+	if isProduction {
+		sameSiteMode = http.SameSiteStrictMode
 	}
 
 	c.SetCookieData(&http.Cookie{
 		Name:     "access_token",
 		Value:    token,
 		Path:     "/",
-		Domain:   "localhost",
+		Domain:   config.ServerConfig.CookieDomain,
 		Expires:  time.Now().Add(24 * time.Hour),
 		MaxAge:   86400,
-		Secure:   true,
+		Secure:   isProduction,
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: sameSiteMode,
 		// Partitioned: true, // Go 1.22+
 	})
 
@@ -98,6 +108,7 @@ func (h *AuthHandler) Signup(c *gin.Context) {
 
 	err = h.UserRepo.Create(c.Request.Context(), newUser)
 	if err != nil {
+		log.Printf("Error creating user: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "user creation failed"})
 		return
 	}
@@ -109,16 +120,22 @@ func (h *AuthHandler) Signup(c *gin.Context) {
 }
 
 func (h *AuthHandler) Logout(c *gin.Context) {
+	isProduction := config.ServerConfig.GoEnv == "production"
+	sameSiteMode := http.SameSiteNoneMode
+	if isProduction {
+		sameSiteMode = http.SameSiteStrictMode
+	}
+
 	c.SetCookieData(&http.Cookie{
 		Name:     "access_token",
 		Value:    "",
 		Path:     "/",
-		Domain:   "localhost",
+		Domain:   config.ServerConfig.CookieDomain,
 		Expires:  time.Now().Add(-1 * time.Hour),
 		MaxAge:   -1,
-		Secure:   true,
+		Secure:   isProduction,
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: sameSiteMode,
 	})
 
 	c.JSON(http.StatusOK, gin.H{
