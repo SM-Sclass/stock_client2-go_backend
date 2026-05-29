@@ -2,8 +2,7 @@ package main
 
 import (
 	"log"
-	"time"
-
+	
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/app"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/config"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/database"
@@ -12,7 +11,6 @@ import (
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/repository"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/routes"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/services"
-	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )
 
@@ -60,16 +58,20 @@ func main() {
 			if err := app.SyncOrdersOnStartup(runtime); err != nil {
 				log.Printf("⚠️ Failed to sync orders: %v", err)
 			}
-
 			// Load tracked stocks on startup (AUTO_INACTIVE stocks)
 			if err := app.LoadTrackedStocksOnStartup(runtime); err != nil {
 				log.Printf("⚠️ Failed to load tracked stocks: %v", err)
+			}
+
+			if err := app.RecoverPendingEntryOrdersOnStartup(runtime); err != nil {
+				log.Printf("⚠️ Failed to recover pending entry orders: %v", err)
 			}
 
 			// Start engines if market is currently open
 			app.StartEnginesIfMarketOpen(runtime)
 		}
 	}
+
 
 	// Setup and start scheduler (cron jobs)
 	scheduler := app.SetupScheduler(runtime)
@@ -85,15 +87,17 @@ func main() {
 	systemHandler := &handlers.SystemHandler{InstrumentService: instrumentSvc, Kc: kiteClient, Runtime: runtime}
 
 	router := gin.Default()
-	router.Use(cors.New(cors.Config{
-		AllowOrigins:              []string{config.ServerConfig.FrontendURL},
-		AllowMethods:              []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:              []string{"Origin", "Content-Type", "Authorization"},
-		ExposeHeaders:             []string{"Content-Length"},
-		AllowCredentials:          true,
-		OptionsResponseStatusCode: 204,
-		MaxAge:                    12 * time.Hour,
-	}))
+	// router.Use(cors.New(cors.Config{
+	// 	AllowOrigins:              []string{config.ServerConfig.FrontendURL, config.ServerConfig.FrontendURL2},
+	// 	AllowMethods:              []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+	// 	AllowHeaders:              []string{"Origin", "Content-Type", "Authorization"},
+	// 	ExposeHeaders:             []string{"Content-Length"},
+	// 	AllowCredentials:          true,
+	// 	OptionsResponseStatusCode: 204,
+	// 	MaxAge:                    12 * time.Hour,
+	// }))
+
+
 	routes.RegisterRoutes(router,
 		authHandler,
 		trackingStockHandler,

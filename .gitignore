@@ -50,6 +50,8 @@ data/
 # Ignore logs folder
 logs/
 logs/**
+vps-docker-compose.yml
+nginx.conf
 
 # Docker and setup files
 DOCKER_INSTALLATION.md

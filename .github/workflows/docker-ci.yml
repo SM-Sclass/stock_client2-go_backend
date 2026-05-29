@@ -1,0 +1,57 @@
+name: Build & Deploy (GHCR → VPS Compose)
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1️⃣ Checkout the code
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # 2️⃣ Login to GitHub Container Registry
+      - name: Login to GHCR
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      # 3️⃣ Build image with GHCR tag
+      - name: Build Docker image
+        run: |
+          docker build --no-cache -t ghcr.io/sm-sclass/go_stock-tracker:latest .
+
+      # 4️⃣ Push image to GHCR
+      - name: Push Docker image
+        run: |
+          docker push ghcr.io/sm-sclass/go_stock-tracker:latest
+
+      # 5️⃣ SSH into VPS and deploy using docker-compose
+      - name: Deploy to VPS using docker-compose
+        uses: appleboy/ssh-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          debug: true
+          script: |
+            whoami
+            ls -la
+            cd apps/backend
+
+            echo "📥 Pulling new image from GHCR..."
+            docker compose pull
+
+            echo "🔄 Restarting services..."
+            docker compose up -d go_stock-tracker
+
+            echo "🧹 Cleaning unused images..."
+            docker image prune -f
+
+            echo "✅ Deployment complete!"

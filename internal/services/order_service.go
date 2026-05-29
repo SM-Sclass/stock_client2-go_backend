@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/models"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/repository"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/utils"
+	"github.com/jackc/pgx/v5"
 
 	kiteconnect "github.com/zerodha/gokiteconnect/v4"
 )
@@ -21,7 +21,12 @@ type Manager interface {
 	UpdateBasePrice(instrumentToken uint32, price float64)
 	UnlockStock(instrumentToken uint32)
 	SetSellQuantity(instrumentToken uint32, quantity uint32)
+	SetBuyQuantity(instrumentToken uint32, quantity uint32)
+	SetDirection(instrumentToken uint32, direction string)
 	GetStockIDByTradingSymbol(tradingSymbol string) (int64, bool)
+	GetBuyAndSellQuantityByToken(token uint32) (uint32, uint32, bool)
+	GetBasePriceByToken(token uint32) (float64, bool)
+	DecrementMaxExecutableOrders(instrumentToken uint32)
 }
 
 type OrderRepo interface {
@@ -29,6 +34,8 @@ type OrderRepo interface {
 	UpdateOrder(ctx context.Context, o *models.Order, ID int64) error
 	GetOrderByKiteOrderID(ctx context.Context, orderID string) (*models.Order, error)
 	GetAllStocksOrderImbalance(ctx context.Context, trackingStockIds []int64) (imbalances []repository.OrderImabalance, err error)
+	GetDailyTradeStats(ctx context.Context, trackingStockIds []int64) (stats []repository.TradeStats, err error)
+	GetRecoverableEntryOrders(ctx context.Context) (orders []models.Order, err error)
 	UpsertOrder(ctx context.Context, o *models.Order) (int64, error)
 }
 
@@ -114,7 +121,7 @@ func (s *OrderService) AddPlacedOrder(ctx context.Context, order *models.Order) 
 }
 
 func (s *OrderService) ProcessOrderUpdate(ctx context.Context, orderUpdate kiteconnect.Order) error {
-	_, err := s.OrderRepo.GetOrderByKiteOrderID(ctx, orderUpdate.OrderID)
+	dbOrder, err := s.OrderRepo.GetOrderByKiteOrderID(ctx, orderUpdate.OrderID)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			s.cachePendingUpdate(orderUpdate)
@@ -122,32 +129,62 @@ func (s *OrderService) ProcessOrderUpdate(ctx context.Context, orderUpdate kitec
 		}
 		log.Printf("Failed to get order but continued %s: %v", orderUpdate.OrderID, err)
 	}
-	
+
 	stockID, exists := s.Manager.GetStockIDByTradingSymbol(orderUpdate.TradingSymbol)
+	buyQuantity, sellQuantity, exists := s.Manager.GetBuyAndSellQuantityByToken(uint32(orderUpdate.InstrumentToken))
+	basePrice, exists := s.Manager.GetBasePriceByToken(uint32(orderUpdate.InstrumentToken))
 	if !exists {
 		log.Printf("⚠️ No tracking stock found for trading symbol %s in order update %s", orderUpdate.TradingSymbol, orderUpdate.OrderID)
 		return nil
 	}
 
-	dbOrder := &models.Order{
+	// isBuyTransaction := orderUpdate.TransactionType == kiteconnect.TransactionTypeBuy
+	// Determine if this is an entry order from our saved event type.
+	isEntryOrder := false
+	if dbOrder != nil {
+		isEntryOrder = dbOrder.EventType == "ENTRY_BUY" || dbOrder.EventType == "ENTRY_SELL"
+	} else {
+		// If DB record doesn't exist yet, we infer intent from our Manager's current state
+		if orderUpdate.TransactionType == kiteconnect.TransactionTypeBuy {
+			// If we are buying and have no current sell obligations, it's likely an entry
+			isEntryOrder = sellQuantity == 0
+		} else if orderUpdate.TransactionType == kiteconnect.TransactionTypeSell {
+			// If we are selling and have no current buy holdings, it's likely a short entry
+			isEntryOrder = buyQuantity == 0
+		}
+	}
+	isBuyTransaction := orderUpdate.TransactionType == kiteconnect.TransactionTypeBuy
+	token := uint32(orderUpdate.InstrumentToken)
+
+	updatedOrder := &models.Order{
 		OrderID:         orderUpdate.OrderID,
 		TrackingStockID: stockID,
-		OrderType:       orderUpdate.OrderType,       
+		OrderType:       orderUpdate.OrderType,
 
+		EventType:       s.buildEventType(isEntryOrder, orderUpdate, basePrice),
 		ExchangeOrderID: utils.ToNullString(orderUpdate.ExchangeOrderID),
 		ParentOrderID:   utils.ToNullString(orderUpdate.ParentOrderID),
 		TransactionType: utils.ToNullString(orderUpdate.TransactionType),
 		Exchange:        orderUpdate.Exchange,
 		Product:         utils.ToNullString(orderUpdate.Product),
-		Quantity:        orderUpdate.FilledQuantity,  // Using FilledQuantity for updates
+		Quantity:        orderUpdate.FilledQuantity,
 		TriggerPrice:    utils.ToNullFloat(orderUpdate.TriggerPrice),
 		PurchasePrice:   utils.ToNullFloat(orderUpdate.AveragePrice),
 		StatusMessage:   utils.ToNullString(orderUpdate.StatusMessage),
 		Status:          orderUpdate.Status,
-		PlacedAt:        orderUpdate.OrderTimestamp.Time, 
+		PlacedAt:        orderUpdate.OrderTimestamp.Time,
 	}
 
-	if _, err := s.OrderRepo.UpsertOrder(ctx, dbOrder); err != nil {
+	log.Printf(
+		"UPSERT order=%s status=%s UpdatedQuantity=%f ResponseQuantity=%f and is it an entry order? %t",
+		orderUpdate.OrderID,
+		orderUpdate.Status,
+		updatedOrder.Quantity,
+		orderUpdate.FilledQuantity,
+		isEntryOrder,
+	)
+
+	if _, err := s.OrderRepo.UpsertOrder(ctx, updatedOrder); err != nil {
 		return fmt.Errorf("failed to update order %s: %v", orderUpdate.OrderID, err)
 	}
 
@@ -155,71 +192,76 @@ func (s *OrderService) ProcessOrderUpdate(ctx context.Context, orderUpdate kitec
 		return nil
 	}
 
-	token := uint32(orderUpdate.InstrumentToken)
-
 	switch orderUpdate.Status {
-
 	case "COMPLETE":
-		if orderUpdate.TransactionType == kiteconnect.TransactionTypeBuy {
-			s.Manager.SetSellQuantity(token, uint32(orderUpdate.FilledQuantity))
-
-		} else if orderUpdate.TransactionType == kiteconnect.TransactionTypeSell {
-
-			remainingQty := orderUpdate.Quantity - orderUpdate.FilledQuantity
-			s.Manager.SetSellQuantity(token, uint32(remainingQty))
-
-			if remainingQty != 0 {
-				log.Printf("⚠️ Partial SELL even in COMPLETE? token=%d", token)
-				return nil
+		if isEntryOrder {
+			if isBuyTransaction {
+				s.Manager.SetBuyQuantity(token, uint32(orderUpdate.FilledQuantity))
+				s.Manager.SetDirection(token, "BUY")
+			} else {
+				s.Manager.SetSellQuantity(token, uint32(orderUpdate.FilledQuantity))
+				s.Manager.SetDirection(token, "SELL")
+			}
+		} else {
+			// Exit fill: reduce the opposing quantity
+			if isBuyTransaction {
+				// Buying to cover a short
+				newQty := uint32(0)
+				if sellQuantity > uint32(orderUpdate.FilledQuantity) {
+					newQty = sellQuantity - uint32(orderUpdate.FilledQuantity)
+				}
+				s.Manager.SetSellQuantity(token, newQty)
+			} else {
+				// Selling to close a long
+				newQty := uint32(0)
+				if buyQuantity > uint32(orderUpdate.FilledQuantity) {
+					newQty = buyQuantity - uint32(orderUpdate.FilledQuantity)
+				}
+				s.Manager.SetBuyQuantity(token, newQty)
 			}
 		}
 
-		// ✅ Only here:
+		s.Manager.DecrementMaxExecutableOrders(token)
 		s.Manager.UpdateBasePrice(token, orderUpdate.AveragePrice)
-		s.Manager.UnlockStock(token) // unlock
+		s.Manager.UnlockStock(token)
+		log.Printf("✅ Order complete: token=%d filled=%f at price=%f", token, orderUpdate.FilledQuantity, orderUpdate.AveragePrice)
 
 	case "PARTIALLY_FILLED":
-		remainingQty := orderUpdate.Quantity - orderUpdate.FilledQuantity
+		// Update the quantities based on what has been filled so far
+		if isEntryOrder {
+			if isBuyTransaction {
+				s.Manager.SetBuyQuantity(token, uint32(orderUpdate.FilledQuantity))
+				s.Manager.SetDirection(token, "BUY")
+			} else {
+				s.Manager.SetSellQuantity(token, uint32(orderUpdate.FilledQuantity))
+				s.Manager.SetDirection(token, "SELL")
+			}
+		}
+		// Note: We don't unlock here because the order is still "active"
+		log.Printf("⏳ Partial fill: token=%d filled=%f", token, orderUpdate.FilledQuantity)
 
-		s.Manager.SetSellQuantity(token, uint32(remainingQty))
-
-		log.Printf("⏳ Partial fill: token=%d filled=%f remaining=%f",
-			token,
-			orderUpdate.FilledQuantity,
-			remainingQty,
-		)
-
-		// ❌ DO NOT unlock
-		return nil
-
-	case "REJECTED":
-		log.Printf("❌ Order REJECTED: token=%d reason=%s",
-			token,
-			orderUpdate.StatusMessage,
-		)
-
+	case "REJECTED", "CANCELLED":
+		log.Printf("❌ Order %s: token=%d", orderUpdate.Status, token)
+		// If an entry order is cancelled/rejected before any fill,
+		// we should ensure the manager reflects 0 quantity.
+		if orderUpdate.FilledQuantity == 0 && isEntryOrder {
+			if isBuyTransaction {
+				s.Manager.SetBuyQuantity(token, 0)
+			} else {
+				s.Manager.SetSellQuantity(token, 0)
+			}
+		}
 		s.Manager.UnlockStock(token)
-		return nil
-
-	case "CANCELLED":
-		remainingQty := orderUpdate.Quantity - orderUpdate.FilledQuantity
-
-		log.Printf("🚫 Order CANCELLED: token=%d remaining=%f",
-			token,
-			remainingQty,
-		)
-
-		s.Manager.SetSellQuantity(token, uint32(remainingQty))
-		s.Manager.UnlockStock(token)
-
-		return nil
 	}
 
 	return nil
 }
 
 func (s *OrderService) AllStocksImbalance(trackingStockIds []int64) (map[int64]int, error) {
-	imbalances, err := s.OrderRepo.GetAllStocksOrderImbalance(context.Background(), trackingStockIds)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	imbalances, err := s.OrderRepo.GetAllStocksOrderImbalance(ctx, trackingStockIds)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return make(map[int64]int), nil // No imbalances found, return empty map
@@ -234,8 +276,42 @@ func (s *OrderService) AllStocksImbalance(trackingStockIds []int64) (map[int64]i
 	return result, nil
 }
 
+func (s *OrderService) AllStocksTradeStats(trackingStockIds []int64) (map[int64]repository.TradeStats, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	stats, err := s.OrderRepo.GetDailyTradeStats(ctx, trackingStockIds)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return make(map[int64]repository.TradeStats), nil // No imbalances found, return empty map
+		}
+		return nil, err
+	}
+
+	result := make(map[int64]repository.TradeStats)
+	for _, stat := range stats {
+		result[stat.TrackingStockID] = stat
+	}
+	return result, nil
+}
+
+func (s *OrderService) GetRecoverableEntryOrders() ([]models.Order, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	orders, err := s.OrderRepo.GetRecoverableEntryOrders(ctx)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return []models.Order{}, nil
+		}
+		return nil, err
+	}
+
+	return orders, nil
+}
+
 func (s *OrderService) SyncOrder(order *models.Order) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	existingOrder, err := s.OrderRepo.GetOrderByKiteOrderID(ctx, order.OrderID)
@@ -249,4 +325,46 @@ func (s *OrderService) SyncOrder(order *models.Order) error {
 
 	order.UpdatedAt = time.Now()
 	return s.OrderRepo.UpdateOrder(ctx, order, existingOrder.ID)
+}
+
+// const (
+// 	SignalEntryBuy    SignalType = "ENTRY_BUY"    // open a long position
+// 	SignalEntrySell   SignalType = "ENTRY_SELL"   // open a short position
+// 	SignalTargetHit   SignalType = "TARGET_HIT"   // close position at target (LIMIT)
+// 	SignalStopLossHit SignalType = "STOPLOSS_HIT" // close position at stoploss (MARKET)
+// 	SignalForceExit   SignalType = "FORCE_EXIT"   // 15:10 PM forced close (MARKET)
+// 	SignalNone        SignalType = "NONE"
+// )
+
+func (s *OrderService) buildEventType(isEntryOrder bool, orderUpdate kiteconnect.Order, basePrice float64) string {
+	if isEntryOrder {
+		if orderUpdate.TransactionType == kiteconnect.TransactionTypeBuy {
+			return "ENTRY_BUY"
+		}
+		return "ENTRY_SELL"
+	}
+
+	// For Exits, we compare Fill Price vs Entry Price
+	fillPrice := orderUpdate.AveragePrice
+	if fillPrice == 0 {
+		return "NONE"
+	}
+
+	if orderUpdate.TransactionType == kiteconnect.TransactionTypeSell {
+		// We are exiting a LONG position
+		if fillPrice >= basePrice {
+			return "TARGET_HIT" // Sold higher than we bought
+		}
+		return "STOPLOSS_HIT" // Sold lower than we bought
+	}
+
+	if orderUpdate.TransactionType == kiteconnect.TransactionTypeBuy {
+		// We are exiting (covering) a SHORT position
+		if fillPrice <= basePrice {
+			return "TARGET_HIT" // Bought back lower than we sold
+		}
+		return "STOPLOSS_HIT" // Bought back higher than we sold
+	}
+
+	return "NONE"
 }

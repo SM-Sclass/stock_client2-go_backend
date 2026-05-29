@@ -96,3 +96,19 @@ func (kc *KiteClient) IsTokenValid() bool {
 func (kc *KiteClient) GetOrders() ([]kiteconnect.Order, error) {
 	return kc.KiteConnect.GetOrders()
 }
+
+func (kc *KiteClient) GetOrderHistory(orderID string) ([]kiteconnect.Order, error) {
+	return kc.KiteConnect.GetOrderHistory(orderID)
+}
+
+func (kc *KiteClient) CancelRegularOrder(orderID string) (kiteconnect.OrderResponse, error) {
+	return kc.KiteConnect.CancelOrder(kiteconnect.VarietyRegular, orderID, nil)
+}
+
+func (kc *KiteClient) GetHistoricOHLC(instrumentToken int64, interval string, from time.Time, to time.Time) ([]kiteconnect.HistoricalData, error) {
+	historicalData, err := kc.KiteConnect.GetHistoricalData(int(instrumentToken), interval, from, to, false, true)
+	if err != nil {
+		return nil, err
+	}
+	return historicalData, nil
+}

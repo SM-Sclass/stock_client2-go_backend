@@ -10,6 +10,7 @@ type Config struct {
 	JWTSecret     string
 	DatabaseURL   string
 	FrontendURL   string
+	FrontendURL2  string
 	Port          string
 	ApiKey        string
 	ApiSecret     string
@@ -29,11 +30,12 @@ func MustLoad() {
 		JWTSecret:     os.Getenv("JWT_SECRET"),
 		DatabaseURL:   os.Getenv("DATABASE_URL"),
 		FrontendURL:   os.Getenv("FRONTEND_URL"),
+		FrontendURL2:  os.Getenv("FRONTEND_URL2"),
 		Port:          os.Getenv("PORT"),
 		ApiKey:        os.Getenv("KITE_API_KEY"),
 		ApiSecret:     os.Getenv("KITE_API_SECRET"),
 		CallbackURL:   os.Getenv("KITE_CALLBACK_URL"),
-		TokenFilePath: "./.token.json",
+		TokenFilePath: "./go_stock-tracker/.token.json",
 	}
 
 }

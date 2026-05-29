@@ -27,6 +27,7 @@ type NewStock struct {
 	InstrumentToken int64   `json:"instrument_token" binding:"required"`
 	Target          float64 `json:"target" binding:"required"`
 	StopLoss        float64 `json:"stoploss" binding:"required"`
+	OrderPriceLimit float64 `json:"order_price_limit" binding:"required"`
 	Quantity        uint32  `json:"quantity" binding:"required"`
 	Status          string  `json:"status" binding:"required"`
 }
@@ -58,6 +59,7 @@ func (h *TrackingStockHandler) Add(c *gin.Context) {
 		InstrumentToken: req.InstrumentToken,
 		Target:          req.Target,
 		StopLoss:        req.StopLoss,
+		OrderPriceLimit: req.OrderPriceLimit,
 		Quantity:        req.Quantity,
 		Status:          req.Status,
 	}
@@ -78,15 +80,17 @@ func (h *TrackingStockHandler) Add(c *gin.Context) {
 
 	if marketOpen && newTrackingStock.Status == "ACTIVE" && h.Runtime.KiteReady {
 		trackingStock := tracking.TrackedStock{
-			ID:              ID,
-			TradingSymbol:   newTrackingStock.TradingSymbol,
-			InstrumentToken: uint32(newTrackingStock.InstrumentToken),
-			Target:          newTrackingStock.Target,
-			StopLoss:        newTrackingStock.StopLoss,
-			BuyQuantity:     newTrackingStock.Quantity,
-			SellQuantity:    0,
-			Locked:          false,
-			Exchange:        newTrackingStock.Exchange,
+			ID:                  ID,
+			TradingSymbol:       newTrackingStock.TradingSymbol,
+			InstrumentToken:     uint32(newTrackingStock.InstrumentToken),
+			Target:              newTrackingStock.Target,
+			StopLoss:            newTrackingStock.StopLoss,
+			OrderPriceLimit:     newTrackingStock.OrderPriceLimit,
+			BuyQuantity:         0,
+			SellQuantity:        0,
+			MaxExecutableOrders: 1, // Default to 1, can be updated later via Update endpoint
+			Locked:              false,
+			Exchange:            newTrackingStock.Exchange,
 		}
 
 		baseLTP, err := h.Runtime.KiteClient.KiteConnect.GetLTP(newTrackingStock.TradingSymbol)
@@ -96,7 +100,10 @@ func (h *TrackingStockHandler) Add(c *gin.Context) {
 		}
 
 		trackingStock.BasePrice = baseLTP[newTrackingStock.TradingSymbol].LastPrice
-		h.Runtime.TrackingManager.AddTrackingStock(trackingStock)
+		if !h.Runtime.TrackingManager.AddTrackingStock(trackingStock) {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to add tracking stock to manager due volatility filter"})
+			return
+		}
 	}
 
 	c.JSON(http.StatusCreated, gin.H{"id": ID})
@@ -170,10 +177,11 @@ func (h *TrackingStockHandler) Update(c *gin.Context) {
 				InstrumentToken: uint32(trackingStockData.InstrumentToken),
 				Target:          trackingStockData.Target,
 				StopLoss:        trackingStockData.StopLoss,
-				BuyQuantity:     trackingStockData.Quantity, // ← ADD THESE
-				SellQuantity:    0,
-				Locked:          false,
-				Exchange:        trackingStockData.Exchange,
+				OrderPriceLimit: trackingStockData.OrderPriceLimit,
+				// BuyQuantity:        0, // ← ADD THESE
+				// SellQuantity:       0,
+				// Locked:             false,
+				Exchange: trackingStockData.Exchange,
 			}
 			h.Runtime.TrackingManager.UpdateStockParameters(trackingStock)
 		}
@@ -241,6 +249,10 @@ func (h *TrackingStockHandler) UpdateStatusToStart(c *gin.Context) {
 			InstrumentToken: uint32(trackingStockData.InstrumentToken),
 			Target:          trackingStockData.Target,
 			StopLoss:        trackingStockData.StopLoss,
+			OrderPriceLimit: trackingStockData.OrderPriceLimit,
+			BuyQuantity:     0,
+			SellQuantity:    0,
+			Locked:          false,
 		}
 
 		var baseLTP kiteconnect.QuoteLTP

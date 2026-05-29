@@ -22,6 +22,14 @@ type OrderImabalance struct {
 	Imbalance       int   `json:"imbalance"`
 }
 
+type TradeStats struct {
+	TrackingStockID int64    `json:"tracking_stock_id"`
+	TotalBuy        int      `json:"total_buy"`
+	TotalSell       int      `json:"total_sell"`
+	EntryCount      int      `json:"entry_count"`
+	LastPrice       *float64 `json:"last_price,omitempty"`
+}
+
 func (r *OrderRepository) AddOrder(ctx context.Context, o *models.Order) (ID int64, err error) {
 	query := `INSERT INTO orders (tracking_stock_id, order_id, order_type, event_type, base_price, quantity, purchase_price, status, placed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`
 
@@ -145,6 +153,67 @@ func (r *OrderRepository) GetAllOrders(ctx context.Context) (orders []models.Ord
 	return orders, nil
 }
 
+func (r *OrderRepository) GetDailyTradeStats(ctx context.Context, trackingStockIDs []int64) (stats []TradeStats, err error) {
+	query := `
+  	WITH last_orders AS (
+    SELECT DISTINCT ON (tracking_stock_id)
+        tracking_stock_id,
+        COALESCE(purchase_price, base_price) AS last_price
+    FROM orders
+    WHERE status NOT IN ('CANCELLED', 'REJECTED')
+      AND (purchase_price IS NOT NULL OR base_price IS NOT NULL)
+      AND tracking_stock_id = ANY($1)
+    ORDER BY tracking_stock_id, placed_at DESC
+)
+
+SELECT 
+    o.tracking_stock_id,
+
+    SUM(CASE 
+        WHEN o.transaction_type = 'BUY' 
+             AND o.status NOT IN ('CANCELLED', 'REJECTED')
+        THEN o.quantity ELSE 0 
+    END) AS total_buy,
+
+    SUM(CASE 
+        WHEN o.transaction_type = 'SELL' 
+             AND o.status NOT IN ('CANCELLED', 'REJECTED')
+        THEN o.quantity ELSE 0
+    END) AS total_sell,
+
+    COUNT(CASE 
+        WHEN o.event_type IN ('ENTRY_BUY', 'ENTRY_SELL') 
+             AND o.status NOT IN ('CANCELLED', 'REJECTED')
+        THEN 1 
+    END) AS entry_count,
+
+    lo.last_price AS last_purchase_price
+
+FROM orders o
+LEFT JOIN last_orders lo 
+    ON o.tracking_stock_id = lo.tracking_stock_id
+
+WHERE o.placed_at::date = CURRENT_DATE
+  AND o.tracking_stock_id = ANY($1)
+
+GROUP BY o.tracking_stock_id, lo.last_price;`
+
+	rows, err := r.DB.Query(ctx, query, trackingStockIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var s TradeStats
+		if err := rows.Scan(&s.TrackingStockID, &s.TotalBuy, &s.TotalSell, &s.EntryCount, &s.LastPrice); err != nil {
+			return nil, err
+		}
+		stats = append(stats, s)
+	}
+	return stats, nil
+}
+
 func (r *OrderRepository) GetAllStocksOrderImbalance(ctx context.Context, trackingStockIDs []int64) (imbalances []OrderImabalance, err error) {
 	query := `SELECT 
 	tracking_stock_id,
@@ -168,6 +237,31 @@ func (r *OrderRepository) GetAllStocksOrderImbalance(ctx context.Context, tracki
 	}
 
 	return imbalances, err
+}
+
+func (r *OrderRepository) GetRecoverableEntryOrders(ctx context.Context) (orders []models.Order, err error) {
+	query := `SELECT tracking_stock_id, order_id, event_type, base_price, quantity, status, placed_at
+		FROM orders
+		WHERE placed_at::date = CURRENT_DATE
+		  AND order_type = 'LIMIT'
+		  AND event_type IN ('ENTRY_BUY', 'ENTRY_SELL')
+		  AND status NOT IN ('COMPLETE', 'CANCELLED', 'REJECTED')`
+
+	rows, err := r.DB.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var o models.Order
+		if err := rows.Scan(&o.TrackingStockID, &o.OrderID, &o.EventType, &o.BasePrice, &o.Quantity, &o.Status, &o.PlacedAt); err != nil {
+			return nil, err
+		}
+		orders = append(orders, o)
+	}
+
+	return orders, nil
 }
 
 func (r *OrderRepository) UpdateOrderStatus(ctx context.Context, id int64, status string) error {
