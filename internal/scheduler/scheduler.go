@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/repository"
-	"github.com/SM-Sclass/stock_client2-go_backend/internal/tracking"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/services"
+	"github.com/SM-Sclass/stock_client2-go_backend/internal/tracking"
 )
 
 var ist = time.FixedZone("IST", 5*60*60+30*60) // UTC+5:30
@@ -18,6 +18,8 @@ type CronJob struct {
 	Minute  int
 	RunFunc func() error
 	LastRun time.Time
+	NextRun time.Time
+
 }
 
 type Scheduler struct {
@@ -32,7 +34,6 @@ func NewScheduler() *Scheduler {
 		stopChan: make(chan struct{}),
 	}
 }
-
 
 func (s *Scheduler) AddJob(name string, hour, minute int, runFunc func() error) {
 	job := &CronJob{
@@ -68,49 +69,87 @@ func (s *Scheduler) Stop() {
 
 // runLoop checks jobs every minute
 func (s *Scheduler) runLoop() {
-	// Check immediately on start
-	s.checkAndRunJobs()
-
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
-
 	for {
+		if len(s.jobs) == 0 {
+			time.Sleep(time.Hour) // Sleep longer if no jobs
+			continue
+		}
+
+		now := time.Now().In(ist)
+
+		// Find next job to run
+		var nextJob *CronJob
+		for _, job := range s.jobs {
+			job.calculateNextRun(now)
+
+			if nextJob == nil || job.NextRun.Before(nextJob.NextRun) {
+				nextJob = job
+			}
+		}
+
+		sleepDuration := time.Until(nextJob.NextRun)
+
+		log.Printf("⏳ Next job: %s at %v (in %v)", nextJob.Name, nextJob.NextRun, sleepDuration)
+
 		select {
+		case <-time.After(sleepDuration):
+			log.Printf("⏰ Running job: %s", nextJob.Name)
+
+			if err := nextJob.RunFunc(); err != nil {
+				log.Printf("❌ Job %s failed: %v", nextJob.Name, err)
+			} else {
+				log.Printf("✅ Job %s completed", nextJob.Name)
+			}
+
 		case <-s.stopChan:
 			return
-		case <-ticker.C:
-			s.checkAndRunJobs()
 		}
 	}
 }
+
+
+// func (s *Scheduler) runLoop() {
+// 	s.checkAndRunJobs()
+
+// 	ticker := time.NewTicker(time.Minute)
+// 	defer ticker.Stop()
+
+// 	for {
+// 		select {
+// 		case <-s.stopChan:
+// 			return
+// 		case <-ticker.C:
+// 			s.checkAndRunJobs()
+// 		}
+// 	}
+// }
 
 // checkAndRunJobs checks if any job should run at current time
-func (s *Scheduler) checkAndRunJobs() {
-	now := time.Now().In(ist)
-	currentHour := now.Hour()
-	currentMinute := now.Minute()
-	today := now.Truncate(24 * time.Hour)
+// func (s *Scheduler) checkAndRunJobs() {
+// 	now := time.Now().In(ist)
+// 	currentHour := now.Hour()
+// 	currentMinute := now.Minute()
+// 	today := now.Truncate(24 * time.Hour)
 
-	for _, job := range s.jobs {
-		// Check if job matches current time
-		if job.Hour == currentHour && job.Minute == currentMinute {
-			// Check if already ran today
-			if job.LastRun.In(ist).Truncate(24 * time.Hour).Equal(today) {
-				continue
-			}
+// 	for _, job := range s.jobs {
+// 		// Check if job matches current time
+// 		if job.Hour == currentHour && job.Minute == currentMinute {
+// 			// Check if already ran today
+// 			if job.LastRun.In(ist).Truncate(24 * time.Hour).Equal(today) {
+// 				continue
+// 			}
 
-			// Run the job
-			log.Printf("⏰ Running cron job: %s", job.Name)
-			if err := job.RunFunc(); err != nil {
-				log.Printf("❌ Cron job %s failed: %v", job.Name, err)
-			} else {
-				log.Printf("✅ Cron job %s completed", job.Name)
-			}
-			job.LastRun = now
-		}
-	}
-}
-
+// 			// Run the job
+// 			log.Printf("⏰ Running cron job: %s", job.Name)
+// 			if err := job.RunFunc(); err != nil {
+// 				log.Printf("❌ Cron job %s failed: %v", job.Name, err)
+// 			} else {
+// 				log.Printf("✅ Cron job %s completed", job.Name)
+// 			}
+// 			job.LastRun = now
+// 		}
+// 	}
+// }
 
 func (s *Scheduler) RunJobNow(name string) error {
 	for _, job := range s.jobs {
@@ -122,6 +161,20 @@ func (s *Scheduler) RunJobNow(name string) error {
 	return nil
 }
 
+func (j *CronJob) calculateNextRun(now time.Time) {
+	next := time.Date(
+		now.Year(), now.Month(), now.Day(),
+		j.Hour, j.Minute, 0, 0,
+		now.Location(),
+	)
+
+	// If time already passed today → schedule tomorrow
+	if !next.After(now) {
+		next = next.Add(24 * time.Hour)
+	}
+
+	j.NextRun = next
+}
 
 func CreateInstrumentFetchJob(instrumentSvc *services.InstrumentService) func() error {
 	return func() error {
@@ -140,7 +193,6 @@ func CreateInstrumentFetchJob(instrumentSvc *services.InstrumentService) func() 
 		return nil
 	}
 }
-
 
 func CreateMarketOpenJob(
 	trackingRepo *repository.TrackingStocksRepository,
@@ -168,19 +220,20 @@ func CreateMarketOpenJob(
 				continue
 			}
 
-			
 			trackedStock := tracking.TrackedStock{
-				TradingSymbol:     stock.TradingSymbol,
+				ID:              stock.ID,
+				TradingSymbol:   stock.TradingSymbol,
 				InstrumentToken: uint32(instrument.InstrumentToken),
 				BasePrice:       0, // Will be set when first tick comes
 				Target:          stock.Target,
 				StopLoss:        stock.StopLoss,
-				Quantity:        stock.Quantity,
+				BuyQuantity:     stock.Quantity,
+				SellQuantity:    0,
+				Locked:          false,
 				Exchange:        stock.Exchange,
 			}
 			trackingManager.AddTrackingStock(trackedStock)
 
-			
 			if err := trackingRepo.UpdateTrackingStockStatus(ctx, stock.ID, "AUTO_ACTIVE"); err != nil {
 				log.Printf("⚠️ Failed to update status for %s: %v", stock.TradingSymbol, err)
 			}
@@ -188,7 +241,6 @@ func CreateMarketOpenJob(
 
 		log.Printf("📈 Loaded %d stocks to tracking manager", trackingManager.CountStocks())
 
-		
 		if startAlgoFunc != nil {
 			return startAlgoFunc()
 		}
@@ -196,7 +248,6 @@ func CreateMarketOpenJob(
 		return nil
 	}
 }
-
 
 func CreateMarketCloseJob(
 	trackingRepo *repository.TrackingStocksRepository,
@@ -214,12 +265,14 @@ func CreateMarketCloseJob(
 			return err
 		}
 
+		count := 0
 		// Update all stocks to AUTO_INACTIVE
 		for _, stock := range stocks {
 			if stock.Status == "AUTO_ACTIVE" || stock.Status == "ACTIVE" {
 				if err := trackingRepo.UpdateTrackingStockStatus(ctx, stock.ID, "AUTO_INACTIVE"); err != nil {
 					log.Printf("⚠️ Failed to update status for %s: %v", stock.TradingSymbol, err)
 				}
+				count++
 			}
 		}
 
@@ -228,7 +281,14 @@ func CreateMarketCloseJob(
 			stopEnginesFunc()
 		}
 
-		log.Printf("🌙 Market closed - %d stocks set to AUTO_INACTIVE", len(stocks))
+		// Reset Tracking stocks parameters like Fifteen candle, candles and direction as ""
+		for _, stock := range stocks {
+				trackingManager.ResetParameters(uint32(stock.InstrumentToken))
+			if stock.Status == "AUTO_ACTIVE" || stock.Status == "ACTIVE" {
+			}
+		}
+
+		log.Printf("🌙 Market closed - %d stocks set to AUTO_INACTIVE", count)
 		return nil
 	}
 }

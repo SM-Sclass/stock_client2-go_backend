@@ -1,10 +1,12 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/app"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/models"
@@ -25,6 +27,7 @@ type NewStock struct {
 	InstrumentToken int64   `json:"instrument_token" binding:"required"`
 	Target          float64 `json:"target" binding:"required"`
 	StopLoss        float64 `json:"stoploss" binding:"required"`
+	OrderPriceLimit float64 `json:"order_price_limit" binding:"required"`
 	Quantity        uint32  `json:"quantity" binding:"required"`
 	Status          string  `json:"status" binding:"required"`
 }
@@ -41,12 +44,12 @@ func (h *TrackingStockHandler) Add(c *gin.Context) {
 	}
 
 	existingStock, err := h.TrackingStockRepo.GetTrackingStockByTradingSymbol(c.Request.Context(), req.TradingSymbol)
-	if existingStock != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "tracking stock already exists"})
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to check existing tracking stock", "error": err.Error()})
 		return
 	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to check existing tracking stock", "error": err.Error()})
+	if existingStock != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "tracking stock already exists"})
 		return
 	}
 
@@ -56,6 +59,7 @@ func (h *TrackingStockHandler) Add(c *gin.Context) {
 		InstrumentToken: req.InstrumentToken,
 		Target:          req.Target,
 		StopLoss:        req.StopLoss,
+		OrderPriceLimit: req.OrderPriceLimit,
 		Quantity:        req.Quantity,
 		Status:          req.Status,
 	}
@@ -76,12 +80,17 @@ func (h *TrackingStockHandler) Add(c *gin.Context) {
 
 	if marketOpen && newTrackingStock.Status == "ACTIVE" && h.Runtime.KiteReady {
 		trackingStock := tracking.TrackedStock{
-			TradingSymbol:   newTrackingStock.TradingSymbol,
-			InstrumentToken: uint32(newTrackingStock.InstrumentToken),
-			Target:          newTrackingStock.Target,
-			StopLoss:        newTrackingStock.StopLoss,
-			Quantity:        newTrackingStock.Quantity,
-			Exchange:        newTrackingStock.Exchange,
+			ID:                  ID,
+			TradingSymbol:       newTrackingStock.TradingSymbol,
+			InstrumentToken:     uint32(newTrackingStock.InstrumentToken),
+			Target:              newTrackingStock.Target,
+			StopLoss:            newTrackingStock.StopLoss,
+			OrderPriceLimit:     newTrackingStock.OrderPriceLimit,
+			BuyQuantity:         0,
+			SellQuantity:        0,
+			MaxExecutableOrders: 1, // Default to 1, can be updated later via Update endpoint
+			Locked:              false,
+			Exchange:            newTrackingStock.Exchange,
 		}
 
 		baseLTP, err := h.Runtime.KiteClient.KiteConnect.GetLTP(newTrackingStock.TradingSymbol)
@@ -91,7 +100,10 @@ func (h *TrackingStockHandler) Add(c *gin.Context) {
 		}
 
 		trackingStock.BasePrice = baseLTP[newTrackingStock.TradingSymbol].LastPrice
-		h.Runtime.TrackingManager.AddTrackingStock(trackingStock)
+		if !h.Runtime.TrackingManager.AddTrackingStock(trackingStock) {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to add tracking stock to manager due volatility filter"})
+			return
+		}
 	}
 
 	c.JSON(http.StatusCreated, gin.H{"id": ID})
@@ -160,12 +172,16 @@ func (h *TrackingStockHandler) Update(c *gin.Context) {
 
 		if trackingStockData.Status == "ACTIVE" {
 			trackingStock := tracking.TrackedStock{
+				ID:              id,
 				TradingSymbol:   trackingStockData.TradingSymbol,
 				InstrumentToken: uint32(trackingStockData.InstrumentToken),
 				Target:          trackingStockData.Target,
 				StopLoss:        trackingStockData.StopLoss,
-				Quantity:        trackingStockData.Quantity, // ← ADD THESE
-				Exchange:        trackingStockData.Exchange,
+				OrderPriceLimit: trackingStockData.OrderPriceLimit,
+				// BuyQuantity:        0, // ← ADD THESE
+				// SellQuantity:       0,
+				// Locked:             false,
+				Exchange: trackingStockData.Exchange,
 			}
 			h.Runtime.TrackingManager.UpdateStockParameters(trackingStock)
 		}
@@ -218,16 +234,27 @@ func (h *TrackingStockHandler) UpdateStatusToStart(c *gin.Context) {
 
 	trackingStockData, err := h.TrackingStockRepo.GetTrackingStockByID(c.Request.Context(), id)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"message": "tracking stock not found"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to retrieve tracking stock", "error": err.Error()})
 		return
 	}
 
 	if h.Runtime.KiteReady {
-		var trackingStock tracking.TrackedStock
-		trackingStock.TradingSymbol = trackingStockData.TradingSymbol
-		trackingStock.InstrumentToken = uint32(trackingStockData.InstrumentToken)
-		trackingStock.Target = trackingStockData.Target
-		trackingStock.StopLoss = trackingStockData.StopLoss
+		trackingStock := tracking.TrackedStock{
+			ID:              id,
+			TradingSymbol:   trackingStockData.TradingSymbol,
+			InstrumentToken: uint32(trackingStockData.InstrumentToken),
+			Target:          trackingStockData.Target,
+			StopLoss:        trackingStockData.StopLoss,
+			OrderPriceLimit: trackingStockData.OrderPriceLimit,
+			BuyQuantity:     0,
+			SellQuantity:    0,
+			Locked:          false,
+		}
+
 		var baseLTP kiteconnect.QuoteLTP
 		baseLTP, err = h.Runtime.KiteClient.KiteConnect.GetLTP(trackingStock.TradingSymbol)
 		if err != nil {
@@ -274,9 +301,9 @@ func (h *TrackingStockHandler) UpdateStatusToStop(c *gin.Context) {
 	}
 
 	if h.Runtime.KiteReady {
-		trackingStockData, err := h.TrackingStockRepo.GetTrackingStockByID(c.Request.Context(), id)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to retrieve tracking stock", "error": err.Error()})
+		trackingStockData, exists := h.Runtime.TrackingManager.GetTrackedStockByID(id)
+		if !exists {
+			c.JSON(http.StatusNotFound, gin.H{"message": "tracking stock not found"})
 			return
 		}
 
@@ -307,13 +334,13 @@ func (h *TrackingStockHandler) Delete(c *gin.Context) {
 	}
 
 	if h.Runtime.KiteReady {
-		trackingStockData, err := h.TrackingStockRepo.GetTrackingStockByID(c.Request.Context(), id)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to retrieve tracking stock", "error": err.Error()})
+		trackingStockData, exists := h.Runtime.TrackingManager.GetTrackedStockByID(id)
+		if !exists {
+			c.JSON(http.StatusNotFound, gin.H{"message": "tracking stock not found"})
 			return
 		}
 
-		h.Runtime.TrackingManager.RemoveStockFromTracking(uint32(trackingStockData.InstrumentToken))
+		h.Runtime.TrackingManager.RemoveStockFromTracking(trackingStockData.InstrumentToken)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "tracking stock deleted successfully"})

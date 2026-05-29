@@ -2,6 +2,7 @@ package kite
 
 import (
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/config"
@@ -9,11 +10,11 @@ import (
 )
 
 type KiteClient struct {
-	KiteConnect     *kiteconnect.Client
-	APIKey          string
-	APISecret       string
-	CallbackURL     string
-	AccessToken     string
+	KiteConnect *kiteconnect.Client
+	APIKey      string
+	APISecret   string
+	CallbackURL string
+	AccessToken string
 }
 
 func NewKiteClient() *KiteClient {
@@ -36,6 +37,8 @@ func (kc *KiteClient) GenerateSession(requestToken string) error {
 	if err != nil {
 		return err
 	}
+
+	log.Printf("✅ kite session generated for user %s", session.UserName)
 
 	// Save token
 	token := &KiteToken{
@@ -61,13 +64,19 @@ func (kc *KiteClient) EnsureAuthenticated() error {
 	}
 
 	if token != nil && time.Now().Before(token.Expiry) {
+		kc.AccessToken = token.AccessToken
 		kc.KiteConnect.SetAccessToken(token.AccessToken)
 		return nil
 	}
 	return fmt.Errorf("token expired or missing")
 }
 
-func (kc *KiteClient) GetInstrumentsByExchange(exchange string) ([]kiteconnect.Instrument, error) {
+// Orders Methods
+func (kc *KiteClient) PlaceRegularOrder(orderParams kiteconnect.OrderParams) (kiteconnect.OrderResponse, error) {
+	return kc.KiteConnect.PlaceOrder(kiteconnect.VarietyRegular, orderParams)
+}
+
+func (kc *KiteClient) GetInstrumentsByExchange(exchange string) (kiteconnect.Instruments, error) {
 	return kc.KiteConnect.GetInstrumentsByExchange(exchange)
 }
 
@@ -82,4 +91,24 @@ func (kc *KiteClient) IsTokenValid() bool {
 	}
 
 	return true
+}
+
+func (kc *KiteClient) GetOrders() ([]kiteconnect.Order, error) {
+	return kc.KiteConnect.GetOrders()
+}
+
+func (kc *KiteClient) GetOrderHistory(orderID string) ([]kiteconnect.Order, error) {
+	return kc.KiteConnect.GetOrderHistory(orderID)
+}
+
+func (kc *KiteClient) CancelRegularOrder(orderID string) (kiteconnect.OrderResponse, error) {
+	return kc.KiteConnect.CancelOrder(kiteconnect.VarietyRegular, orderID, nil)
+}
+
+func (kc *KiteClient) GetHistoricOHLC(instrumentToken int64, interval string, from time.Time, to time.Time) ([]kiteconnect.HistoricalData, error) {
+	historicalData, err := kc.KiteConnect.GetHistoricalData(int(instrumentToken), interval, from, to, false, true)
+	if err != nil {
+		return nil, err
+	}
+	return historicalData, nil
 }
