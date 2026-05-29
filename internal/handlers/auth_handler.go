@@ -64,7 +64,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	isProduction := config.ServerConfig.GoEnv == "production"
 	sameSiteMode := http.SameSiteNoneMode
 	if isProduction {
-		sameSiteMode = http.SameSiteStrictMode
+		sameSiteMode = http.SameSiteLaxMode
 	}
 
 	c.SetCookieData(&http.Cookie{
@@ -123,7 +123,7 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 	isProduction := config.ServerConfig.GoEnv == "production"
 	sameSiteMode := http.SameSiteNoneMode
 	if isProduction {
-		sameSiteMode = http.SameSiteStrictMode
+		sameSiteMode = http.SameSiteLaxMode
 	}
 
 	c.SetCookieData(&http.Cookie{
