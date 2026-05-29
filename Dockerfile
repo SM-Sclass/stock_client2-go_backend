@@ -34,10 +34,6 @@ WORKDIR /app
 # Copy binary from builder
 COPY --from=builder /app/server .
 
-# Copy env file only if you want it inside image
-# (usually env vars are injected via docker-compose)
-COPY .env .env
-
 # Expose your app port (change if different)
 EXPOSE 8080
 
