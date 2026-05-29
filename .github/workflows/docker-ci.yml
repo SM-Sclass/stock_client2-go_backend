@@ -49,7 +49,7 @@ jobs:
             docker compose pull
 
             echo "🔄 Restarting services..."
-            docker compose up -d go_stock-tracker
+            docker compose up -d stock-tracker
 
             echo "🧹 Cleaning unused images..."
             docker image prune -f
