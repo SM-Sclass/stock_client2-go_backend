@@ -16,6 +16,8 @@ type Config struct {
 	ApiSecret     string
 	CallbackURL   string
 	TokenFilePath string
+	CookieDomain  string
+	GoEnv         string
 }
 
 var ServerConfig *Config
@@ -36,6 +38,8 @@ func MustLoad() {
 		ApiSecret:     os.Getenv("KITE_API_SECRET"),
 		CallbackURL:   os.Getenv("KITE_CALLBACK_URL"),
 		TokenFilePath: "./go_stock-tracker/.token.json",
+		CookieDomain:  os.Getenv("COOKIE_DOMAIN"),
+		GoEnv:         os.Getenv("GO_ENV"),
 	}
 
 }
