@@ -79,6 +79,10 @@ func (kws *KiteWS) Start() {
 	go kws.ws.Serve()
 }
 
+func (kws *KiteWS) Stop() {
+	kws.ws.Close()
+}
+
 func (kws *KiteWS) SubscribeToken(token uint32) {
 	kws.mu.Lock()
 	defer kws.mu.Unlock()

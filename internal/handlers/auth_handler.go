@@ -145,7 +145,6 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 
 func (h *AuthHandler) Profile(c *gin.Context) {
 	userID, exists := c.Get("user_id")
-	log.Printf("ℹ️ profile request user_id type=%T", userID)
 	if !exists {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "user ID not found in context"})
 		return

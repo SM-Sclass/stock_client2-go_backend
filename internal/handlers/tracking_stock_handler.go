@@ -13,7 +13,6 @@ import (
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/repository"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/tracking"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/utils"
-	"github.com/zerodha/gokiteconnect/v4"
 )
 
 type TrackingStockHandler struct {
@@ -224,13 +223,13 @@ func (h *TrackingStockHandler) UpdateStatusToStart(c *gin.Context) {
 	}
 
 	if !utils.IsTradingDay() {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "market is closed, cannot start tracking stock"})
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Cannot start tracking stock on a non-trading day"})
 		return
 	}
 
-	req := StockStatus{
-		Status: "ACTIVE",
-	}
+	// req := StockStatus{
+	// 	Status: "ACTIVE",
+	// }
 
 	trackingStockData, err := h.TrackingStockRepo.GetTrackingStockByID(c.Request.Context(), id)
 	if err != nil {
@@ -243,35 +242,22 @@ func (h *TrackingStockHandler) UpdateStatusToStart(c *gin.Context) {
 	}
 
 	if h.Runtime.KiteReady {
-		trackingStock := tracking.TrackedStock{
-			ID:              id,
-			TradingSymbol:   trackingStockData.TradingSymbol,
-			InstrumentToken: uint32(trackingStockData.InstrumentToken),
-			Target:          trackingStockData.Target,
-			StopLoss:        trackingStockData.StopLoss,
-			OrderPriceLimit: trackingStockData.OrderPriceLimit,
-			BuyQuantity:     0,
-			SellQuantity:    0,
-			Locked:          false,
-		}
-
-		var baseLTP kiteconnect.QuoteLTP
-		baseLTP, err = h.Runtime.KiteClient.KiteConnect.GetLTP(trackingStock.TradingSymbol)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to get LTP for tracking stock", "error": err.Error()})
+		// If stock is already tracked, no need to do anything
+		if _, exists := h.Runtime.TrackingManager.GetTrackedStockByID(id); exists {
+			c.JSON(http.StatusOK, gin.H{"message": "stock is already active"})
 			return
 		}
 
-		trackingStock.BasePrice = baseLTP[trackingStock.TradingSymbol].LastPrice
-		h.Runtime.TrackingManager.AddTrackingStock(trackingStock)
+		// Recover the state of the stock before adding it to the tracking manager
+		go app.RecoverStockState(h.Runtime, trackingStockData);
 	}
 
-	err = h.TrackingStockRepo.UpdateTrackingStockStatus(c.Request.Context(), id, req.Status)
-	if err != nil {
-		// h.UpdateStatusToStop()
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to update tracking stock status", "error": err.Error()})
-		return
-	}
+	// err = h.TrackingStockRepo.UpdateTrackingStockStatus(c.Request.Context(), id, req.Status)
+	// if err != nil {
+	// 	// h.UpdateStatusToStop()
+	// 	c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to update tracking stock status", "error": err.Error()})
+	// 	return
+	// }
 
 	c.JSON(http.StatusOK, gin.H{"message": "tracking stock started successfully"})
 }

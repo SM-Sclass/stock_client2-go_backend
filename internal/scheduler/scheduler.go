@@ -4,10 +4,12 @@ import (
 	"context"
 	"log"
 	"time"
+	"fmt"
 
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/repository"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/services"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/tracking"
+	"github.com/SM-Sclass/stock_client2-go_backend/internal/utils"
 )
 
 var ist = time.FixedZone("IST", 5*60*60+30*60) // UTC+5:30
@@ -198,11 +200,20 @@ func CreateMarketOpenJob(
 	trackingRepo *repository.TrackingStocksRepository,
 	instrumentSvc *services.InstrumentService,
 	trackingManager *tracking.TrackingManager,
+	checkTokenValidationFunc func() bool,
 	startAlgoFunc func() error,
 ) func() error {
 	return func() error {
 		log.Println("🔔 Market opening - Loading stocks and starting algo...")
 
+		if !checkTokenValidationFunc() {
+			return fmt.Errorf("kite token is not valid, cannot start algo")
+		}
+
+		if !utils.IsTradingDay() {
+			log.Println("⚠️ Not a trading day, skipping market open job")
+			return nil
+		}
 		ctx := context.Background()
 
 		// Fetch all stocks from DB (they should be AUTO_INACTIVE from previous day)
@@ -252,12 +263,21 @@ func CreateMarketOpenJob(
 func CreateMarketCloseJob(
 	trackingRepo *repository.TrackingStocksRepository,
 	trackingManager *tracking.TrackingManager,
+	closeWebsocketFunc func(),
+	checkTokenValidationFunc func() bool,
 	stopEnginesFunc func(),
 ) func() error {
 	return func() error {
 		log.Println("🔔 Market closing - Setting stocks to AUTO_INACTIVE...")
+		if !checkTokenValidationFunc() {
+			return fmt.Errorf("kite token is not valid, cannot stop algo gracefully")
+		}
 
 		ctx := context.Background()
+		if !utils.IsTradingDay() {
+			log.Println("⚠️ Not a trading day, skipping market close job")
+			return nil
+		}
 
 		// Get all stocks from DB
 		stocks, err := trackingRepo.GetAllTrackingStocks(ctx)
@@ -276,17 +296,19 @@ func CreateMarketCloseJob(
 			}
 		}
 
-		// Stop the engines
-		if stopEnginesFunc != nil {
-			stopEnginesFunc()
-		}
-
 		// Reset Tracking stocks parameters like Fifteen candle, candles and direction as ""
 		for _, stock := range stocks {
 				trackingManager.ResetParameters(uint32(stock.InstrumentToken))
 			if stock.Status == "AUTO_ACTIVE" || stock.Status == "ACTIVE" {
 			}
 		}
+
+		// Stop the engines
+		if stopEnginesFunc != nil {
+			stopEnginesFunc()
+		}
+
+		closeWebsocketFunc()
 
 		log.Printf("🌙 Market closed - %d stocks set to AUTO_INACTIVE", count)
 		return nil
