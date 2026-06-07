@@ -202,6 +202,7 @@ func (s *OrderService) ProcessOrderUpdate(ctx context.Context, orderUpdate kitec
 				s.Manager.SetSellQuantity(token, uint32(orderUpdate.FilledQuantity))
 				s.Manager.SetDirection(token, "SELL")
 			}
+			s.Manager.UpdateBasePrice(token, orderUpdate.AveragePrice)
 		} else {
 			// Exit fill: reduce the opposing quantity
 			if isBuyTransaction {
@@ -211,6 +212,9 @@ func (s *OrderService) ProcessOrderUpdate(ctx context.Context, orderUpdate kitec
 					newQty = sellQuantity - uint32(orderUpdate.FilledQuantity)
 				}
 				s.Manager.SetSellQuantity(token, newQty)
+				if newQty == 0 {
+					s.Manager.SetDirection(token, "")
+				}
 			} else {
 				// Selling to close a long
 				newQty := uint32(0)
@@ -218,11 +222,14 @@ func (s *OrderService) ProcessOrderUpdate(ctx context.Context, orderUpdate kitec
 					newQty = buyQuantity - uint32(orderUpdate.FilledQuantity)
 				}
 				s.Manager.SetBuyQuantity(token, newQty)
+				if newQty == 0 {
+					s.Manager.SetDirection(token, "")
+				}
 			}
+			s.Manager.UpdateBasePrice(token, 0)
 		}
 
 		s.Manager.DecrementMaxExecutableOrders(token)
-		s.Manager.UpdateBasePrice(token, orderUpdate.AveragePrice)
 		s.Manager.UnlockStock(token)
 		log.Printf("✅ Order complete: token=%d filled=%f at price=%f", token, orderUpdate.FilledQuantity, orderUpdate.AveragePrice)
 
@@ -250,6 +257,7 @@ func (s *OrderService) ProcessOrderUpdate(ctx context.Context, orderUpdate kitec
 			} else {
 				s.Manager.SetSellQuantity(token, 0)
 			}
+			s.Manager.SetDirection(token, "")
 		}
 		s.Manager.UnlockStock(token)
 	}

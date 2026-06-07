@@ -30,7 +30,7 @@ type TrackedStock struct {
 	// from websocket ticks and rolled by the 5-min time ticker.
 	Candles CandleState
 
-	// Intraday state for the entry/exit strategy``
+	// Intraday state for the entry/exit strategy
 	Direction      string // "BUY" or "SELL" – direction of the open position
 	SignalFired    bool   // true once today's entry signal has been sent
 	TradingAllowed bool   // false if we have hit the max trades for the day and should ignore further signals
@@ -75,6 +75,16 @@ func (tm *TrackingManager) AddTrackingStock(stock TrackedStock) bool {
 		}
 	}
 
+	if existing, exists := tm.tracked[stock.InstrumentToken]; exists {
+		fifteen := tm.tracked[stock.InstrumentToken].FifteenCandle
+		rangeSize := fifteen.High - fifteen.Low
+		existing.Target = rangeSize
+		existing.StopLoss = rangeSize * 0.5
+		tm.mu.Lock()
+		tm.tracked[stock.InstrumentToken] = existing
+		tm.mu.Unlock()
+	}
+
 	tm.SetTradingAllowed(stock.InstrumentToken, false)
 	tm.ws.SubscribeToken(stock.InstrumentToken)
 	return true
@@ -93,8 +103,8 @@ func (tm *TrackingManager) UpdateStockParameters(stock TrackedStock) {
 	defer tm.mu.Unlock()
 
 	if existing, exists := tm.tracked[stock.InstrumentToken]; exists {
-		existing.Target = stock.Target
-		existing.StopLoss = stock.StopLoss
+		// existing.Target = stock.Target
+		// existing.StopLoss = stock.StopLoss
 		existing.OrderPriceLimit = stock.OrderPriceLimit
 		// existing.Locked = stock.Locked
 

@@ -10,6 +10,7 @@ import (
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/kite"
 	kcws "github.com/SM-Sclass/stock_client2-go_backend/internal/kite/ws"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/models"
+	"github.com/SM-Sclass/stock_client2-go_backend/internal/repository"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/order"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/scheduler"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/tracking"
@@ -19,6 +20,11 @@ import (
 func StartKiteRuntime(runtime *Runtime) error {
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
+
+	if !utils.IsTradingDay() {
+		log.Println("⚠️ Not a trading day - skipping Kite runtime initialization")
+		return nil
+	}
 
 	if runtime.KiteReady {
 		return nil
@@ -90,6 +96,9 @@ func SetupScheduler(runtime *Runtime) *scheduler.Scheduler {
 			runtime.TrackingStockRepo,
 			runtime.InstrumentSvc,
 			runtime.TrackingManager,
+			func() bool {
+				return runtime.KiteClient.IsTokenValid()
+			},
 			func() error {
 				runtime.AlgoEngine.Start()
 				runtime.OrderEngine.Start()
@@ -98,13 +107,19 @@ func SetupScheduler(runtime *Runtime) *scheduler.Scheduler {
 		),
 	)
 
-	// Job 3: Set stocks to AUTO_INACTIVE at 3:10 PM (market close)
+	// Job 3: Set stocks to AUTO_INACTIVE at 3:12 PM (market close)
 	sched.AddJob(
 		"MarketClose",
-		15, 10,
+		15, 12,
 		scheduler.CreateMarketCloseJob(
 			runtime.TrackingStockRepo,
 			runtime.TrackingManager,
+			func() {
+				runtime.KiteWS.Stop()
+			},
+			func() bool {
+				return runtime.KiteClient.IsTokenValid()
+			},
 			func() {
 				runtime.AlgoEngine.Stop()
 				runtime.OrderEngine.Stop()
@@ -116,7 +131,52 @@ func SetupScheduler(runtime *Runtime) *scheduler.Scheduler {
 	return sched
 }
 
-// Sync OrdersOnStartup syncs orders from Kite to DB on server startup
+// SyncOrdersOnStartup syncs orders from Kite to DB on server startup
+// buildTrackedStock constructs a TrackedStock from stats, LTP quote, instrument token, and stock config.
+// This is shared between LoadTrackedStocksOnStartup and RecoverStockState.
+func buildTrackedStock(stock *models.TrackingStock, stats repository.TradeStats, lastPrice float64, instrumentToken uint32) tracking.TrackedStock {
+	direction := ""
+	buyQty := uint32(0)
+	sellQty := uint32(0)
+	signalFired := stats.EntryCount > 0
+	maxExecutableOrders := 1
+
+	if stats.TotalBuy > stats.TotalSell {
+		direction = "BUY"
+		maxExecutableOrders = maxExecutableOrders - stats.TotalSell
+		buyQty = uint32(stats.TotalBuy - stats.TotalSell)
+	} else if stats.TotalSell > stats.TotalBuy {
+		direction = "SELL"
+		maxExecutableOrders = maxExecutableOrders - stats.TotalBuy
+		sellQty = uint32(stats.TotalSell - stats.TotalBuy)
+	}
+
+	basePrice := 0.0
+	if stats.LastPrice != nil && direction != "" {
+		basePrice = *stats.LastPrice
+	}
+	if basePrice == 0 {
+		basePrice = lastPrice
+	}
+
+	return tracking.TrackedStock{
+		ID:                  stock.ID,
+		TradingSymbol:       stock.TradingSymbol,
+		InstrumentToken:     instrumentToken,
+		BasePrice:           basePrice,
+		Target:              stock.Target,
+		StopLoss:            stock.StopLoss,
+		OrderPriceLimit:     stock.OrderPriceLimit,
+		BuyQuantity:         buyQty,
+		SellQuantity:        sellQty,
+		Direction:           direction,
+		SignalFired:         signalFired,
+		MaxExecutableOrders: uint32(maxExecutableOrders),
+		Locked:              false,
+		Exchange:            stock.Exchange,
+	}
+}
+
 func SyncOrdersOnStartup(runtime *Runtime) error {
 	if !utils.IsTradingDay() {
 		log.Println("⏸️ Not a trading day, skipping order sync")
@@ -228,79 +288,89 @@ func LoadTrackedStocksOnStartup(runtime *Runtime) error {
 		}
 
 		instStr := fmt.Sprintf("%s:%s", stock.Exchange, stock.TradingSymbol)
-
-		// Access the result using the same key
 		quote, exists := allStocksLTP[instStr]
 		if !exists {
 			log.Printf("⚠️ No data returned for %s", instStr)
 			continue
 		}
 
-		// RECOVERY LOGIC:
-		// If Buy > Sell: We are currently LONG.
-		// If Sell > Buy: We are currently SHORT.
-		// If Buy == Sell and EntryCount > 0: We finished a trade for today.
+		trackedStock := buildTrackedStock(&stock, stats, quote.LastPrice, uint32(instrument.InstrumentToken))
 
-		direction := ""
-		buyQty := uint32(0)
-		sellQty := uint32(0)
-		signalFired := stats.EntryCount > 0
-		MaxExecutableOrders := 1
-
-
-		if stats.TotalBuy > stats.TotalSell {
-			direction = "BUY"
-			MaxExecutableOrders = MaxExecutableOrders - stats.TotalSell
-			buyQty = uint32(stats.TotalBuy - stats.TotalSell)
-			totalOpenTrades++
-		} else if stats.TotalSell > stats.TotalBuy {
-			direction = "SELL"
-			MaxExecutableOrders = MaxExecutableOrders - stats.TotalBuy
-			sellQty = uint32(stats.TotalSell - stats.TotalBuy)
-			totalOpenTrades++
-		}
-
+		// Accumulate engine counters before attempting to add
 		totalDailyTrades += stats.EntryCount
-		basePrice := 0.0
-		if stats.LastPrice != nil {
-			basePrice = *stats.LastPrice
+		if trackedStock.Direction != "" {
+			totalOpenTrades++
 		}
-		if basePrice == 0 {
-			basePrice = quote.LastPrice
-		}
-
-		trackedStock := tracking.TrackedStock{
-			ID:                  stock.ID,
-			TradingSymbol:       stock.TradingSymbol,
-			InstrumentToken:     uint32(instrument.InstrumentToken),
-			BasePrice:           basePrice,
-			Target:              stock.Target,
-			StopLoss:            stock.StopLoss,
-			OrderPriceLimit:     stock.OrderPriceLimit,
-			BuyQuantity:         buyQty,
-			SellQuantity:        sellQty,
-			Direction:           direction,
-			SignalFired:         signalFired,
-			MaxExecutableOrders: uint32(MaxExecutableOrders),
-			Locked:              false,
-			Exchange:            stock.Exchange,
-		}
-
 
 		if !runtime.TrackingManager.AddTrackingStock(trackedStock) {
 			continue
 		}
 		loadedCount++
-		log.Printf("✅ Loaded %s to tracking manager with base price %.2f, direction=%s, buyQty=%d, sellQty=%d", stock.TradingSymbol, basePrice, direction, buyQty, sellQty)
+		log.Printf("✅ Loaded %s to tracking manager with base price %.2f, direction=%s, buyQty=%d, sellQty=%d",
+			stock.TradingSymbol, trackedStock.BasePrice, trackedStock.Direction, trackedStock.BuyQuantity, trackedStock.SellQuantity)
 
 		if err := runtime.TrackingStockRepo.UpdateTrackingStockStatus(ctx, stock.ID, "AUTO_ACTIVE"); err != nil {
 			log.Printf("⚠️ Failed to update status for %s: %v", stock.TradingSymbol, err)
 		}
 	}
 
-	// Sync the Engine counters
 	runtime.AlgoEngine.SyncCounters(totalDailyTrades, totalOpenTrades)
 	log.Printf("📈 Loaded %d stocks to tracking manager on startup", loadedCount)
+	return nil
+}
+
+// RecoverStockState recovers the state of a single stock and adds it to the tracking manager.
+func RecoverStockState(runtime *Runtime, stock *models.TrackingStock) error {
+	ctx := context.Background()
+
+	// 1. Sync today's orders for this stock from Kite
+	if err := SyncOrdersOnStartup(runtime); err != nil {
+		log.Printf("⚠️ Failed to sync orders during recovery for %s: %v", stock.TradingSymbol, err)
+	}
+
+	// 2. Get LTP
+	instStr := fmt.Sprintf("%s:%s", stock.Exchange, stock.TradingSymbol)
+	allStocksLTP, err := runtime.KiteClient.KiteConnect.GetLTP(instStr)
+	if err != nil {
+		return fmt.Errorf("failed to get LTP for %s: %w", stock.TradingSymbol, err)
+	}
+	quote, exists := allStocksLTP[instStr]
+	if !exists {
+		return fmt.Errorf("no LTP data returned for %s", stock.TradingSymbol)
+	}
+
+	// 3. Get Trade Stats
+	statsMap, err := runtime.OrderSvc.AllStocksTradeStats([]int64{stock.ID})
+	if err != nil {
+		return fmt.Errorf("failed to get trade stats for %s: %w", stock.TradingSymbol, err)
+	}
+	stats := statsMap[stock.ID]
+
+	// 4. Get Instrument
+	instrument, exists := runtime.InstrumentSvc.NSESymbolToInstrument[stock.TradingSymbol]
+	if !exists {
+		return fmt.Errorf("instrument not found for %s", stock.TradingSymbol)
+	}
+
+	// 5. Build and register TrackedStock
+	trackedStock := buildTrackedStock(stock, stats, quote.LastPrice, uint32(instrument.InstrumentToken))
+
+	if !runtime.TrackingManager.AddTrackingStock(trackedStock) {
+		return fmt.Errorf("failed to add %s to tracking manager", stock.TradingSymbol)
+	}
+
+	log.Printf("✅ Recovered and loaded %s to tracking manager with base price %.2f, direction=%s, buyQty=%d, sellQty=%d",
+		stock.TradingSymbol, trackedStock.BasePrice, trackedStock.Direction, trackedStock.BuyQuantity, trackedStock.SellQuantity)
+
+	if err := runtime.TrackingStockRepo.UpdateTrackingStockStatus(ctx, stock.ID, "ACTIVE"); err != nil {
+		log.Printf("⚠️ Failed to update status for %s: %v", stock.TradingSymbol, err)
+	}
+
+	// 6. Recover any pending entry orders for this stock
+	if err := RecoverPendingEntryOrdersOnStartup(runtime); err != nil {
+		log.Printf("⚠️ Failed to recover pending entry orders during recovery for %s: %v", stock.TradingSymbol, err)
+	}
+
 	return nil
 }
 
@@ -323,7 +393,7 @@ func RecoverPendingEntryOrdersOnStartup(runtime *Runtime) error {
 
 // StartEnginesIfMarketOpen starts algo and order engines if market is currently open
 func StartEnginesIfMarketOpen(runtime *Runtime) {
-	if !utils.IsMarketTime() {
+	if !utils.IsMarketTime() || !utils.IsTradingDay() {
 		log.Println("⏸️ Market not open, engines will start at 9:15")
 		return
 	}
