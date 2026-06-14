@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 	"time"
 
@@ -112,16 +111,16 @@ func (s *InstrumentService) LoadInstrumentFromDB() error {
 	var temp []DBInstrument
 
 	err = json.Unmarshal(inst.InstrumentsData, &temp)
-	data, err := json.MarshalIndent(temp, "", "  ")
+	// data, err := json.MarshalIndent(temp, "", "  ")
 	if err != nil {
 		return err
 	}
 
 	// Write JSON to file
-	err = os.WriteFile("instrument.json", data, 0644)
-	if err != nil {
-		return fmt.Errorf("unmarshal failed: %v", err)
-	}
+	// err = os.WriteFile("instrument.json", data, 0644)
+	// if err != nil {
+	// 	return fmt.Errorf("unmarshal failed: %v", err)
+	// }
 
 	s.NSEInstruments = make(kiteconnect.Instruments, len(temp))
 
@@ -212,19 +211,19 @@ func (s *InstrumentService) GetSearchedInstrumentByName(name string) ([]kiteconn
 	return results, nil
 }
 
-func (s *InstrumentService) SaveInstrumentsToFile() error {
+// func (s *InstrumentService) SaveInstrumentsToFile() error {
 
-	// Convert struct slice → JSON bytes
-	data, err := json.MarshalIndent(s.NSEInstruments, "", "  ")
-	if err != nil {
-		return err
-	}
+// 	// Convert struct slice → JSON bytes
+// 	data, err := json.MarshalIndent(s.NSEInstruments, "", "  ")
+// 	if err != nil {
+// 		return err
+// 	}
 
-	// Write JSON to file
-	err = os.WriteFile("instrument.json", data, 0644)
-	if err != nil {
-		return err
-	}
+// 	// Write JSON to file
+// 	err = os.WriteFile("instrument.json", data, 0644)
+// 	if err != nil {
+// 		return err
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
