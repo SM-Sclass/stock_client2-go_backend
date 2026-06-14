@@ -62,7 +62,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 
 	isProduction := config.ServerConfig.GoEnv == "production"
-	sameSiteMode := http.SameSiteNoneMode
+	sameSiteMode := http.SameSiteStrictMode
 	if isProduction {
 		sameSiteMode = http.SameSiteLaxMode
 	}
