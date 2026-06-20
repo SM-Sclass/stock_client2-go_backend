@@ -3,6 +3,7 @@ package handlers
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -73,6 +74,7 @@ func (h *TrackingStockHandler) Add(c *gin.Context) {
 
 	ID, err := h.TrackingStockRepo.AddTrackingStock(c.Request.Context(), newTrackingStock)
 	if err != nil {
+		log.Printf("Error adding tracking stock: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to add tracking stock", "error": err.Error()})
 		return
 	}
@@ -94,12 +96,14 @@ func (h *TrackingStockHandler) Add(c *gin.Context) {
 
 		baseLTP, err := h.Runtime.KiteClient.KiteConnect.GetLTP(newTrackingStock.TradingSymbol)
 		if err != nil {
+			log.Printf("Error getting LTP for tracking stock: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to get LTP for tracking stock", "error": err.Error()})
 			return
 		}
 
 		trackingStock.BasePrice = baseLTP[newTrackingStock.TradingSymbol].LastPrice
 		if !h.Runtime.TrackingManager.AddTrackingStock(trackingStock) {
+			log.Printf("Error adding tracking stock to manager: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to add tracking stock to manager due volatility filter"})
 			return
 		}
@@ -153,11 +157,13 @@ func (h *TrackingStockHandler) Update(c *gin.Context) {
 
 	err = h.TrackingStockRepo.UpdateTrackingStock(c.Request.Context(), &req, id)
 	if err != nil {
+		log.Printf("Error updating tracking stock: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to update tracking stock", "error": err.Error()})
 		return
 	}
 
 	if !utils.IsTradingDay() {
+		log.Printf("Tracking stock updated but not a trading day")
 		c.JSON(http.StatusOK, gin.H{"message": "tracking stock updated successfully"})
 		return
 	}
@@ -165,6 +171,7 @@ func (h *TrackingStockHandler) Update(c *gin.Context) {
 	if h.Runtime.KiteReady {
 		trackingStockData, err := h.TrackingStockRepo.GetTrackingStockByID(c.Request.Context(), id)
 		if err != nil {
+			log.Printf("Error retrieving tracking stock: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to retrieve tracking stock", "error": err.Error()})
 			return
 		}
@@ -184,6 +191,8 @@ func (h *TrackingStockHandler) Update(c *gin.Context) {
 			}
 			h.Runtime.TrackingManager.UpdateStockParameters(trackingStock)
 		}
+
+		log.Printf("Tracking stock %s updated in tracking manager", trackingStockData.TradingSymbol)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "tracking stock updated successfully"})
@@ -206,6 +215,7 @@ func (h *TrackingStockHandler) UpdateStatus(c *gin.Context) {
 
 	err = h.TrackingStockRepo.UpdateTrackingStockStatus(c.Request.Context(), id, req.Status)
 	if err != nil {
+		log.Printf("Error updating tracking stock status: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "failed to update tracking stock status", "error": err.Error()})
 		return
 	}
@@ -233,6 +243,7 @@ func (h *TrackingStockHandler) UpdateStatusToStart(c *gin.Context) {
 
 	trackingStockData, err := h.TrackingStockRepo.GetTrackingStockByID(c.Request.Context(), id)
 	if err != nil {
+		log.Printf("Error retrieving tracking stock: %v", err)
 		if errors.Is(err, pgx.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"message": "tracking stock not found"})
 			return
@@ -250,6 +261,7 @@ func (h *TrackingStockHandler) UpdateStatusToStart(c *gin.Context) {
 
 		// Recover the state of the stock before adding it to the tracking manager
 		go app.RecoverStockState(h.Runtime, trackingStockData);
+		log.Printf("Tracking stock %s Started and added to tracking manager", trackingStockData.TradingSymbol)
 	}
 
 	// err = h.TrackingStockRepo.UpdateTrackingStockStatus(c.Request.Context(), id, req.Status)
@@ -294,6 +306,7 @@ func (h *TrackingStockHandler) UpdateStatusToStop(c *gin.Context) {
 		}
 
 		h.Runtime.TrackingManager.RemoveStockFromTracking(uint32(trackingStockData.InstrumentToken))
+		log.Printf("Tracking stock %s Stopped and removed from tracking manager", trackingStockData.TradingSymbol)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "tracking stock stopped successfully"})
@@ -327,7 +340,9 @@ func (h *TrackingStockHandler) Delete(c *gin.Context) {
 		}
 
 		h.Runtime.TrackingManager.RemoveStockFromTracking(trackingStockData.InstrumentToken)
+		log.Printf("Tracking stock %s deleted and removed from tracking manager", trackingStockData.TradingSymbol)
 	}
+
 
 	c.JSON(http.StatusOK, gin.H{"message": "tracking stock deleted successfully"})
 }

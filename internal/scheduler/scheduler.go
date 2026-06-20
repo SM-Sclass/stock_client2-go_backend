@@ -2,9 +2,9 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
-	"fmt"
 
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/repository"
 	"github.com/SM-Sclass/stock_client2-go_backend/internal/services"
@@ -21,7 +21,6 @@ type CronJob struct {
 	RunFunc func() error
 	LastRun time.Time
 	NextRun time.Time
-
 }
 
 type Scheduler struct {
@@ -108,7 +107,6 @@ func (s *Scheduler) runLoop() {
 		}
 	}
 }
-
 
 // func (s *Scheduler) runLoop() {
 // 	s.checkAndRunJobs()
@@ -295,19 +293,20 @@ func CreateMarketCloseJob(
 				count++
 			}
 		}
+		log.Printf("📉 Updated %d stocks to AUTO_INACTIVE", count)
 
 		// Reset Tracking stocks parameters like Fifteen candle, candles and direction as ""
 		for _, stock := range stocks {
-				trackingManager.ResetParameters(uint32(stock.InstrumentToken))
-			if stock.Status == "AUTO_ACTIVE" || stock.Status == "ACTIVE" {
-			}
+			trackingManager.ResetParameters(uint32(stock.InstrumentToken))
 		}
-
+		log.Printf("Stopping Algo and Order engines")
+		
 		// Stop the engines
 		if stopEnginesFunc != nil {
 			stopEnginesFunc()
 		}
 
+		log.Printf("Closing Websocket connection")
 		closeWebsocketFunc()
 
 		log.Printf("🌙 Market closed - %d stocks set to AUTO_INACTIVE", count)
